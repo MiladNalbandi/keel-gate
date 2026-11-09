@@ -1,0 +1,833 @@
+openapi: 3.1.0
+info:
+  title: keel-gate Gate Service API
+  version: 0.1.0
+  description: |
+    HTTP contract for the keel-gate Gate Service (see docs/specs/SPEC-001-keel-gate.md).
+    Agents use an agent key and may only call /v1/decide and /v1/results.
+    Humans use a session cookie plus a CSRF token for every state change.
+  license:
+    name: MIT
+servers:
+  - url: http://localhost:8787
+security:
+  - humanSession: []
+tags:
+  - name: agent
+    description: Calls made by agents and adapters.
+  - name: human
+    description: Calls made by human approvers.
+  - name: policy
+    description: Rule and tool management by human policy admins (Amendment A2).
+  - name: ops
+paths:
+  /v1/decide:
+    post:
+      tags: [agent]
+      operationId: decide
+      summary: Decide allow / ask / deny for one tool call (AC-001 to AC-112).
+      security:
+        - agentKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DecideRequest' }
+      responses:
+        '200':
+          description: The decision. An ask verdict includes the pending approval.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Decision' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /v1/results:
+    post:
+      tags: [agent]
+      operationId: reportResult
+      summary: Report a tool result label so the gate can track taint (AC-060 to AC-062).
+      security:
+        - agentKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResultReport' }
+      responses:
+        '204': { description: Recorded. }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+  /v1/approvals:
+    get:
+      tags: [human]
+      operationId: listApprovals
+      summary: List approvals (default only pending).
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/ApprovalStatus' }
+      responses:
+        '200':
+          description: Approvals, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Approval' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+  /v1/approvals/{approval_id}/approve:
+    post:
+      tags: [human]
+      operationId: approve
+      summary: Approve exactly one pending call, once (AC-040 to AC-046).
+      parameters:
+        - $ref: '#/components/parameters/ApprovalId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AnswerRequest' }
+      responses:
+        '200':
+          description: Approved. The call may now run once.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Approval' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/AlreadyAnswered' }
+        '410': { $ref: '#/components/responses/Expired' }
+  /v1/approvals/{approval_id}/deny:
+    post:
+      tags: [human]
+      operationId: deny
+      summary: Deny a pending call.
+      parameters:
+        - $ref: '#/components/parameters/ApprovalId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AnswerRequest' }
+      responses:
+        '200':
+          description: Denied. The agent receives a deny.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Approval' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/AlreadyAnswered' }
+  /v1/mandates:
+    get:
+      tags: [human]
+      operationId: listMandates
+      summary: List mandates with remaining budget and uses.
+      responses:
+        '200':
+          description: Mandates.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Mandate' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+    post:
+      tags: [human]
+      operationId: createMandate
+      summary: Create a standing, limited approval (AC-050 to AC-053).
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateMandateRequest' }
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Mandate' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+  /v1/mandates/{mandate_id}:
+    delete:
+      tags: [human]
+      operationId: revokeMandate
+      summary: Revoke a mandate. It allows nothing after this.
+      parameters:
+        - name: mandate_id
+          in: path
+          required: true
+          schema: { type: string, pattern: '^md_[A-Za-z0-9]{8,40}$' }
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '204': { description: Revoked. }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/audit:
+    get:
+      tags: [human]
+      operationId: listAudit
+      summary: Read audit entries (secrets are already redacted).
+      parameters:
+        - name: after
+          in: query
+          required: false
+          schema: { type: integer, minimum: 0 }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 200 }
+      responses:
+        '200':
+          description: Entries in order.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AuditEntry' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+  /v1/audit/verify:
+    get:
+      tags: [human]
+      operationId: verifyAudit
+      summary: Check the hash chain (AC-130, AC-154).
+      responses:
+        '200':
+          description: Result of the check.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VerifyResult' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+  /v1/step-up:
+    post:
+      tags: [policy]
+      operationId: stepUp
+      summary: Re-confirm (password or passkey) before policy changes (AC-195). Valid for 5 minutes.
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StepUpRequest' }
+      responses:
+        '200':
+          description: Step-up granted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StepUpResult' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/rules:
+    get:
+      tags: [policy]
+      operationId: listRules
+      summary: List custom rules (enabled, disabled, and expired) with the current version.
+      responses:
+        '200':
+          description: Rules.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RuleList' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+    post:
+      tags: [policy]
+      operationId: addRule
+      summary: Add a custom rule in one step (AC-190). Applies within 1 second (AC-199).
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/StepUpToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateRuleRequest' }
+      responses:
+        '201':
+          description: Added. A new version was created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Rule' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/GitOnly' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+  /v1/rules/{rule_id}:
+    patch:
+      tags: [policy]
+      operationId: updateRule
+      summary: Enable, disable, or edit a custom rule (AC-191).
+      parameters:
+        - $ref: '#/components/parameters/RuleId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/StepUpToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateRuleRequest' }
+      responses:
+        '200':
+          description: Updated. A new version was created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Rule' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/GitOnly' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+    delete:
+      tags: [policy]
+      operationId: removeRule
+      summary: Remove a custom rule (AC-191).
+      parameters:
+        - $ref: '#/components/parameters/RuleId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/StepUpToken'
+      responses:
+        '204': { description: Removed. A new version was created. }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/GitOnly' }
+  /v1/policy/versions:
+    get:
+      tags: [policy]
+      operationId: listPolicyVersions
+      summary: Every version of rules and tools, newest first (AC-192).
+      responses:
+        '200':
+          description: Versions.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/PolicyVersion' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+  /v1/policy/versions/{version}/rollback:
+    post:
+      tags: [policy]
+      operationId: rollbackPolicy
+      summary: Go back to an earlier version in one step (AC-192). Creates a new version.
+      parameters:
+        - name: version
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/StepUpToken'
+      responses:
+        '200':
+          description: Rolled back.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PolicyVersion' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/GitOnly' }
+  /v1/tools:
+    get:
+      tags: [policy]
+      operationId: listTools
+      summary: List tools with their safety fields, pin status, and draft status.
+      responses:
+        '200':
+          description: Tools.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ToolEntry' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+    post:
+      tags: [policy]
+      operationId: importTools
+      summary: Import tool definitions as draft entries for review (AC-185, AC-193).
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/StepUpToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ImportToolsRequest' }
+      responses:
+        '201':
+          description: Drafts created, with review notes.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ToolEntry' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/GitOnly' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+  /v1/tools/{tool_name}/pin:
+    post:
+      tags: [policy]
+      operationId: pinTool
+      summary: Approve a reviewed tool definition (pin it). Clears its draft status (AC-091, AC-193).
+      parameters:
+        - $ref: '#/components/parameters/ToolName'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/StepUpToken'
+      responses:
+        '200':
+          description: Pinned.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ToolEntry' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/GitOnly' }
+  /v1/tools/{tool_name}:
+    delete:
+      tags: [policy]
+      operationId: removeTool
+      summary: Remove a tool. Later calls to it are denied as unknown (AC-193).
+      parameters:
+        - $ref: '#/components/parameters/ToolName'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/StepUpToken'
+      responses:
+        '204': { description: Removed. A new version was created. }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/GitOnly' }
+  /healthz:
+    get:
+      tags: [ops]
+      operationId: health
+      security: []
+      summary: Liveness check. Reveals no configuration.
+      responses:
+        '200':
+          description: Alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                additionalProperties: false
+                properties:
+                  ok: { type: boolean }
+
+components:
+  securitySchemes:
+    agentKey:
+      type: http
+      scheme: bearer
+      description: Agent key. Scope is decide + results only.
+    humanSession:
+      type: apiKey
+      in: cookie
+      name: kg_session
+      description: Human approver session (login page). State changes also need X-CSRF-Token.
+  parameters:
+    ApprovalId:
+      name: approval_id
+      in: path
+      required: true
+      schema: { type: string, pattern: '^ap_[A-Za-z0-9]{8,40}$' }
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      schema: { type: string, minLength: 16, maxLength: 128 }
+    StepUpToken:
+      name: X-Step-Up-Token
+      in: header
+      required: true
+      description: From POST /v1/step-up; at most 5 minutes old.
+      schema: { type: string, minLength: 16, maxLength: 128 }
+    RuleId:
+      name: rule_id
+      in: path
+      required: true
+      schema: { type: string, pattern: '^ru_[A-Za-z0-9]{8,40}$' }
+    ToolName:
+      name: tool_name
+      in: path
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 200, pattern: '^[A-Za-z0-9_.:-]+$' }
+  responses:
+    Unauthenticated:
+      description: Missing or invalid credentials. Body reveals nothing else.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Authenticated, but not allowed (for example an agent key on a human endpoint).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Not found.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    AlreadyAnswered:
+      description: This approval already has an answer (first answer wins).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Expired:
+      description: The approval expired. The call did not run.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    RateLimited:
+      description: Too many requests.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    GitOnly:
+      description: Policy changes are set to git-only (policy_changes = git); edit the files instead (AC-198).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ValidationFailed:
+      description: Input is invalid.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ValidationError' }
+  schemas:
+    Verdict:
+      type: string
+      enum: [allow, ask, deny, modify, defer]
+    Tier:
+      type: string
+      enum: [T0, T1, T2, T3]
+    Source:
+      type: string
+      enum: [claude, openai, mcp, claude_code, agent_sdk, raw]
+    ApprovalStatus:
+      type: string
+      enum: [pending, approved, denied, expired, used]
+    DecideRequest:
+      type: object
+      required: [tool, args, session_id]
+      additionalProperties: false
+      properties:
+        tool:
+          type: string
+          minLength: 1
+          maxLength: 200
+          pattern: '^[A-Za-z0-9_.:/-]+$'
+        args:
+          type: object
+          description: Tool arguments. At most 64 KB when encoded as JSON.
+        session_id:
+          type: string
+          minLength: 1
+          maxLength: 100
+          pattern: '^[A-Za-z0-9_-]+$'
+        source: { $ref: '#/components/schemas/Source' }
+        approval_token:
+          type: string
+          description: One-time token from an approved request, to run that exact call.
+          maxLength: 128
+    ResultReport:
+      type: object
+      required: [session_id, tool, label]
+      additionalProperties: false
+      properties:
+        session_id: { type: string, minLength: 1, maxLength: 100, pattern: '^[A-Za-z0-9_-]+$' }
+        tool: { type: string, minLength: 1, maxLength: 200 }
+        label:
+          type: string
+          enum: [trusted, untrusted, secret]
+        ok:
+          type: boolean
+          description: False when the tool failed or its postcheck failed.
+    Decision:
+      type: object
+      required: [verdict, tier, reasons, rule_ids, call_hash, decided_at]
+      additionalProperties: false
+      properties:
+        verdict: { $ref: '#/components/schemas/Verdict' }
+        tier: { $ref: '#/components/schemas/Tier' }
+        reasons:
+          type: array
+          items: { type: string }
+        rule_ids:
+          type: array
+          items: { type: string }
+        call_hash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        decided_at: { type: string, format: date-time }
+        approval:
+          description: Present when verdict is ask.
+          $ref: '#/components/schemas/Approval'
+        message_for_model:
+          type: string
+          description: Text to return to the model as the tool result when the call does not run.
+        observed_verdict:
+          description: Observe mode only (AC-182). The verdict enforce mode would have given.
+          $ref: '#/components/schemas/Verdict'
+    Approval:
+      type: object
+      required: [id, status, binding_code, tool, call_hash, tier, summary, requester, created_at, expires_at]
+      additionalProperties: false
+      properties:
+        id: { type: string, pattern: '^ap_[A-Za-z0-9]{8,40}$' }
+        status: { $ref: '#/components/schemas/ApprovalStatus' }
+        binding_code: { type: string, pattern: '^[A-Z0-9]{2}-[A-Z0-9]{3}$' }
+        tool: { type: string }
+        call_hash: { type: string, pattern: '^[a-f0-9]{64}$' }
+        tier: { $ref: '#/components/schemas/Tier' }
+        summary:
+          type: string
+          description: The action in plain words, for example "Refund $500.00 on order 1042".
+        why:
+          type: string
+          description: The user message that led to this call, if known.
+        reversible: { type: boolean }
+        rule_ids:
+          type: array
+          items: { type: string }
+        unusual:
+          type: boolean
+          description: True when this request is unlike recent approved ones.
+        requester: { type: string, description: Agent id. }
+        answered_by: { type: string }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        answered_at: { type: string, format: date-time }
+    AnswerRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        note: { type: string, maxLength: 500 }
+    Mandate:
+      type: object
+      required: [id, tool, per_call_cap, budget, spent, payees, max_uses, uses, expires_at, revoked, created_by]
+      additionalProperties: false
+      properties:
+        id: { type: string, pattern: '^md_[A-Za-z0-9]{8,40}$' }
+        tool: { type: string }
+        currency: { type: string, pattern: '^[A-Z]{3}$' }
+        per_call_cap: { type: string, description: Decimal as string. }
+        budget: { type: string }
+        spent: { type: string }
+        payees:
+          type: array
+          items: { type: string }
+        max_uses: { type: integer }
+        uses: { type: integer }
+        expires_at: { type: string, format: date-time }
+        revoked: { type: boolean }
+        created_by: { type: string }
+    CreateMandateRequest:
+      type: object
+      required: [tool, currency, per_call_cap, budget, payees, max_uses, expires_at]
+      additionalProperties: false
+      properties:
+        tool: { type: string, minLength: 1, maxLength: 200 }
+        currency: { type: string, pattern: '^[A-Z]{3}$' }
+        per_call_cap: { type: string, pattern: '^[0-9]+(\.[0-9]{1,2})?$' }
+        budget: { type: string, pattern: '^[0-9]+(\.[0-9]{1,2})?$' }
+        payees:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { type: string, minLength: 1, maxLength: 200 }
+        max_uses: { type: integer, minimum: 1, maximum: 10000 }
+        expires_at: { type: string, format: date-time }
+    AuditEntry:
+      type: object
+      required: [seq, at, session_id, agent_id, tool, verdict, tier, reasons, rule_ids, call_hash, prev_hash, entry_hash]
+      additionalProperties: false
+      properties:
+        seq: { type: integer, minimum: 0 }
+        at: { type: string, format: date-time }
+        session_id: { type: string }
+        agent_id: { type: string }
+        on_behalf_of: { type: string }
+        tool: { type: string }
+        args_redacted:
+          type: object
+          description: Arguments with secret values replaced by "[redacted]".
+        verdict: { $ref: '#/components/schemas/Verdict' }
+        tier: { $ref: '#/components/schemas/Tier' }
+        reasons:
+          type: array
+          items: { type: string }
+        rule_ids:
+          type: array
+          items: { type: string }
+        taint:
+          type: array
+          items: { type: string, enum: [untrusted, secret] }
+        approval_id: { type: string }
+        call_hash: { type: string, pattern: '^[a-f0-9]{64}$' }
+        prev_hash: { type: string, pattern: '^[a-f0-9]{64}$' }
+        entry_hash: { type: string, pattern: '^[a-f0-9]{64}$' }
+    VerifyResult:
+      type: object
+      required: [ok, entries]
+      additionalProperties: false
+      properties:
+        ok: { type: boolean }
+        entries: { type: integer, minimum: 0 }
+        first_bad_line:
+          type: integer
+          description: 1-based line number of the first broken entry, when ok is false.
+    RuleVerdict:
+      type: string
+      enum: [deny, ask, allow]
+    Rule:
+      type: object
+      required: [id, tool, verdict, reason, enabled, expired, created_by, created_at, version]
+      additionalProperties: false
+      properties:
+        id: { type: string, pattern: '^ru_[A-Za-z0-9]{8,40}$' }
+        tool:
+          type: string
+          description: Exact tool name or a glob such as payments.*
+        match:
+          type: string
+          description: Optional pattern on the shell command or on one argument (see policy-format.md).
+        match_arg:
+          type: string
+          description: The argument the pattern applies to; empty means the shell command.
+        verdict: { $ref: '#/components/schemas/RuleVerdict' }
+        reason: { type: string }
+        enabled: { type: boolean }
+        expires_at: { type: string, format: date-time }
+        expired: { type: boolean }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        version: { type: integer, minimum: 1 }
+    RuleList:
+      type: object
+      required: [version, rules]
+      additionalProperties: false
+      properties:
+        version: { type: integer, minimum: 0 }
+        policy_changes:
+          type: string
+          enum: [ui, git]
+        rules:
+          type: array
+          items: { $ref: '#/components/schemas/Rule' }
+    CreateRuleRequest:
+      type: object
+      required: [tool, verdict, reason]
+      additionalProperties: false
+      properties:
+        tool: { type: string, minLength: 1, maxLength: 200, pattern: '^[A-Za-z0-9_.:*?-]+$' }
+        match: { type: string, minLength: 1, maxLength: 500 }
+        match_arg: { type: string, maxLength: 100 }
+        verdict: { $ref: '#/components/schemas/RuleVerdict' }
+        reason: { type: string, minLength: 1, maxLength: 300 }
+        expires_at: { type: string, format: date-time }
+    UpdateRuleRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        enabled: { type: boolean }
+        match: { type: string, minLength: 1, maxLength: 500 }
+        verdict: { $ref: '#/components/schemas/RuleVerdict' }
+        reason: { type: string, minLength: 1, maxLength: 300 }
+        expires_at: { type: [string, 'null'], format: date-time }
+    PolicyVersion:
+      type: object
+      required: [version, changed_by, changed_at, summary, policy_hash]
+      additionalProperties: false
+      properties:
+        version: { type: integer, minimum: 1 }
+        changed_by: { type: string }
+        changed_at: { type: string, format: date-time }
+        summary: { type: string, description: For example "added rule ru_… (deny shell rm -rf build/cache)". }
+        policy_hash: { type: string, pattern: '^[a-f0-9]{64}$' }
+    ToolEntry:
+      type: object
+      required: [name, description, read_only, state_changing, reversible, pinned, draft]
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        description: { type: string }
+        read_only: { type: boolean }
+        state_changing: { type: boolean }
+        reversible: { type: boolean }
+        destructive: { type: boolean }
+        remote: { type: boolean }
+        egress: { type: boolean }
+        mandate_ok: { type: boolean }
+        result_label:
+          type: string
+          enum: [trusted, untrusted, secret]
+        pinned: { type: boolean, description: False when the definition changed since its pin. }
+        draft: { type: boolean }
+        review_notes:
+          type: array
+          items: { type: string }
+    ImportToolsRequest:
+      type: object
+      required: [format, tools]
+      additionalProperties: false
+      properties:
+        format:
+          type: string
+          enum: [mcp, claude, openai]
+        server:
+          type: string
+          description: MCP server name; tools become server.tool.
+          pattern: '^[A-Za-z0-9_-]{1,60}$'
+        tools:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { type: object }
+    StepUpRequest:
+      type: object
+      required: [method, proof]
+      additionalProperties: false
+      properties:
+        method:
+          type: string
+          enum: [password, passkey]
+        proof: { type: string, minLength: 1, maxLength: 4096 }
+    StepUpResult:
+      type: object
+      required: [token, expires_at]
+      additionalProperties: false
+      properties:
+        token: { type: string }
+        expires_at: { type: string, format: date-time }
+    Error:
+      type: object
+      required: [message]
+      additionalProperties: false
+      properties:
+        message: { type: string }
+    ValidationError:
+      type: object
+      required: [message, errors]
+      additionalProperties: false
+      properties:
+        message: { type: string }
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }

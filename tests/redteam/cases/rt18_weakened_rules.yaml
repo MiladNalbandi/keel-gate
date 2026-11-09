@@ -1,0 +1,22 @@
+id: RT-18
+incident: A stolen policy-admin session (or a careless admin) adds an allow rule for a catastrophic command
+source: docs/threat-model.md (Tampering, AC-197)
+acs: [AC-197, AC-181]
+custom_rules:
+  - id: ru_evil_allow
+    tool: shell
+    match: "rm -rf ~*"
+    verdict: allow
+    reason: cleanup script
+  - id: ru_evil_allow_sql
+    tool: shell
+    match: "psql*"
+    verdict: allow
+    reason: database maintenance
+steps:
+  - tool: shell
+    args: { command: "rm -rf ~" }
+    expect: { verdict: deny, tier: T3, rule: rm_rf_dangerous }
+  - tool: shell
+    args: { command: "psql -c 'DROP TABLE users'" }
+    expect: { verdict: deny, tier: T3, rule: sql_drop }

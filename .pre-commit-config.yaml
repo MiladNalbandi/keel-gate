@@ -1,0 +1,43 @@
+# Install once:  uv run pre-commit install
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-yaml
+        args: ["--unsafe"]   # syntax check only; mkdocs.yml uses a !!python/name tag
+      - id: check-toml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+      - id: detect-private-key
+
+  # Local hooks use the versions pinned in uv.lock, so CI and laptops agree.
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types: [python]
+      - id: mypy
+        name: mypy (strict, keel_gate only)
+        entry: uv run mypy
+        language: system
+        pass_filenames: false
+        files: ^keel_gate/
+      - id: markdown-lint
+        name: markdown lint
+        entry: uv run --extra docs pymarkdown --config .pymarkdown.json scan
+        language: system
+        types: [markdown]
+      - id: readme-budget
+        name: README stays short (100 lines max)
+        entry: python3 scripts/check_readme.py
+        language: system
+        files: ^README\.md$

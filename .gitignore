@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+coverage.xml
+htmlcov/
+
+# Docs build output
+site/
+
+# Runtime data (approvals, undo journal, live audit logs)
+.keel-gate/
+data/
+demo/out/
+*.sqlite3
+audit.jsonl
+
+# Secrets never go in git
+.env
+.env.*
+!.env.example
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

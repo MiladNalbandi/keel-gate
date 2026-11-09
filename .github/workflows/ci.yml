@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  code:
+    name: lint, types, tests
+    runs-on: ubuntu-latest
+    # Runs once the keel_gate package exists (Day 1 afternoon onward).
+    if: ${{ hashFiles('keel_gate/__init__.py') != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --all-extras --locked
+      - name: ruff
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+      - name: mypy (strict)
+        run: uv run mypy
+      - name: tests + coverage
+        run: uv run pytest -q --cov --cov-report=term
+      - name: speed smoke check
+        run: uv run python bench/bench_decide.py --ci
+      - name: dependency audit
+        run: uv run pip-audit
+
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: README budget
+        run: python3 scripts/check_readme.py
+      - name: markdown lint
+        run: uv run --no-project --with pymarkdownlnt pymarkdown --config .pymarkdown.json scan README.md CONTRIBUTING.md docs
+      - name: build site (fails on broken links)
+        run: uv run --no-project --with mkdocs-material --with pymdown-extensions mkdocs build --strict
