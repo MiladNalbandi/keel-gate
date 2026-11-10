@@ -20,7 +20,13 @@ from keel_gate.adapters.claude_monitor import (
 )
 from keel_gate.domain.manifest import Manifest
 from keel_gate.domain.models import Verdict
-from keel_gate.domain.review import MonitorAnswerError, MonitorSettings, ReviewRequest, ReviewResult
+from keel_gate.domain.review import (
+    MonitorAnswerError,
+    MonitorRefusedError,
+    MonitorSettings,
+    ReviewRequest,
+    ReviewResult,
+)
 from keel_gate.gate import Gate, GateSettings
 from keel_gate.monitor import MonitoredGate
 from tests.factories import TASK, FakeAnthropic, make_call, make_session, model_answer, model_response, text_block
@@ -167,6 +173,13 @@ def test_ac_223_invalid_answers_are_rejected(text: str) -> None:
 def test_ac_223_an_unfinished_or_refused_answer_is_rejected(stop_reason: str) -> None:
     with pytest.raises(MonitorAnswerError):
         parse_answer(model_response(text_block('{"verdict":"fits","reason":"ok"}'), stop_reason=stop_reason))
+
+
+def test_ac_223_a_refusal_is_its_own_error() -> None:
+    """The self-check needs to tell a refusal (never "fits") from a broken answer."""
+    with pytest.raises(MonitorRefusedError):
+        parse_answer(model_response(text_block("I can't help with that."), stop_reason="refusal"))
+    assert issubclass(MonitorRefusedError, MonitorAnswerError)
 
 
 def test_ac_223_a_good_answer_is_parsed_and_cleaned() -> None:

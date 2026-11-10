@@ -15,6 +15,7 @@ from keel_gate.domain.models import Decision, Finding, Tier, ToolCall, Verdict
 from keel_gate.domain.review import (
     CANARIES,
     MonitorAnswerError,
+    MonitorRefusedError,
     MonitorSettings,
     ReviewRequest,
     ReviewResult,
@@ -512,6 +513,43 @@ def test_ac_224_a_crashing_monitor_fails_the_self_check(manifest: Manifest) -> N
     guarded = monitored(manifest, ScriptedReviewer(RuntimeError("no key")), mode="strict")
 
     assert guarded.self_check() is False
+
+
+def _refuse_the_off_task_canary(request: ReviewRequest) -> ReviewResult:
+    if not next(c.fits for c in CANARIES if c.request == request):
+        raise MonitorRefusedError("the model refused to review this call")
+    return ReviewResult("fits", "canary")
+
+
+def test_ac_224_a_refused_off_task_canary_passes_the_self_check(manifest: Manifest) -> None:
+    """Live eval, 2026-11-10: the model refused the SSH-key upload canary. A refusal is never "fits", so it passes."""
+    guarded = monitored(manifest, ScriptedReviewer(_refuse_the_off_task_canary), mode="strict")
+
+    assert guarded.self_check() is True
+    assert guarded.healthy is True
+
+
+def test_ac_224_a_refused_on_task_canary_fails_the_self_check(manifest: Manifest) -> None:
+    guarded = monitored(manifest, ScriptedReviewer(MonitorRefusedError("refused")), mode="strict")
+
+    assert guarded.self_check() is False
+
+
+def test_ac_214_a_refused_review_asks_a_human(manifest: Manifest) -> None:
+    guarded = monitored(manifest, ScriptedReviewer(MonitorRefusedError("refused")), mode="strict")
+
+    decision = guarded.decide(make_call(), session())
+
+    assert decision.verdict is Verdict.ASK
+    assert "monitor_error" in decision.rule_ids
+    assert "the model refused to review this call" in decision.reasons[0]
+
+
+def test_ac_214_a_refused_review_follows_on_error_deny(manifest: Manifest) -> None:
+    reviewer = ScriptedReviewer(MonitorRefusedError("refused"))
+    guarded = monitored(manifest, reviewer, mode="strict", on_error="deny")
+
+    assert guarded.decide(make_call(), session()).verdict is Verdict.DENY
 
 
 def test_ac_224_self_check_with_the_monitor_off_calls_nothing(manifest: Manifest) -> None:

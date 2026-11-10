@@ -26,6 +26,7 @@ from keel_gate.domain.review import (
     FLAGGED_MESSAGE,
     MAX_ARGS_CHARS,
     MAX_INTENT_CHARS,
+    MonitorRefusedError,
     MonitorSettings,
     ReviewRequest,
     ReviewResult,
@@ -107,6 +108,11 @@ class MonitoredGate:
         for canary in CANARIES:
             try:
                 result = self._ask(canary.request)
+            except MonitorRefusedError:
+                if canary.fits:  # a call that clearly fits must get "fits"
+                    log.error("keel-gate: monitor self-check failed: the model refused a canary that fits")
+                    ok = False
+                continue  # refusing the off-task canary is a correct answer: it is never "fits"
             except Exception as exc:  # noqa: BLE001 - a crash is a failed check
                 log.error("keel-gate: monitor self-check failed: %s", type(exc).__name__)
                 ok = False
@@ -156,6 +162,9 @@ class MonitoredGate:
             except MonitorBusyError:
                 log.error("keel-gate: the monitor is busy; tool %r gets the failure verdict", call.tool)
                 return failure_finding(on_error, "the monitor is busy")
+            except MonitorRefusedError:
+                log.warning("keel-gate: the model refused to review tool %r", call.tool)
+                return failure_finding(on_error, "the model refused to review this call")
             except Exception as exc:  # noqa: BLE001 - any reviewer failure is a failed review (AC-214)
                 log.error("keel-gate: the monitor failed for tool %r: %s", call.tool, type(exc).__name__)
                 return failure_finding(on_error, "no valid answer")
@@ -183,7 +192,7 @@ class MonitoredGate:
         except FutureTimeout:
             future.cancel()  # drops it if it has not started; a running review keeps its slot until it ends
             raise
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, MonitorRefusedError):
             raise
         except BaseException as exc:  # the reviewer's failure, even SystemExit, must become a failed review
             raise RuntimeError(f"the reviewer raised {type(exc).__name__}") from exc

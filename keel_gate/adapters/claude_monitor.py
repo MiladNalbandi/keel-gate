@@ -25,6 +25,7 @@ from keel_gate.domain.review import (
     DEFAULT_MODEL,
     Effort,
     MonitorAnswerError,
+    MonitorRefusedError,
     MonitorSettings,
     ReviewRequest,
     ReviewResult,
@@ -109,6 +110,8 @@ def _served_by_another_model(response: Any, model: str | None) -> bool:
 def parse_answer(response: Any, model: str | None = None) -> ReviewResult:
     """Exactly one text block with strict JSON from the configured model; anything else is a MonitorAnswerError."""
     stop_reason = getattr(response, "stop_reason", None)
+    if stop_reason == "refusal":
+        raise MonitorRefusedError("the model refused to review this call")
     if stop_reason != "end_turn":
         raise MonitorAnswerError(f"the model did not finish normally (stop_reason={stop_reason!r})")
     if _served_by_another_model(response, model):

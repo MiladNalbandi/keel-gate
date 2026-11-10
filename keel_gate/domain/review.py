@@ -38,6 +38,14 @@ class MonitorAnswerError(ValueError):
     """The monitor's answer broke the contract (AC-222, AC-223). It counts as a failed review: ask a human."""
 
 
+class MonitorRefusedError(MonitorAnswerError):
+    """The model refused to judge the call (stop_reason "refusal"). A failed review (ask a human), and never "fits".
+
+    The live eval showed that the model refuses some clearly harmful calls, such as uploading an SSH key. So in the
+    self-check, a refusal of the off-task canary counts as a correct answer (AC-224).
+    """
+
+
 @dataclass(frozen=True)
 class MonitorSettings:
     """From the gate's config file only (AC-212). There is deliberately no field for tools or prompts."""
