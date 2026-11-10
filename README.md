@@ -32,7 +32,7 @@ When something is blocked, the model gets a clear tool error, so it can stop or 
 ```bash
 git clone https://github.com/MiladNalbandi/keel-gate && cd keel-gate
 uv sync
-uv run pytest -q               # 650 tests
+uv run pytest -q               # 655 tests
 uv run pytest -q -m redteam    # attacks taken from real incidents
 ```
 
@@ -74,9 +74,11 @@ Details: [how it works](docs/how-it-works.md).
 
 ## Evidence
 
-- 650 tests, 94% coverage, type-checked (`mypy --strict`).
+- 655 tests, 95% coverage, type-checked (`mypy --strict`).
 - 9 of 22 attack tests named after real incidents run and pass today (Replit, Antigravity, Cursor, Ona, goal hijack,
   injection against the monitor). See [red-team results](docs/red-team.md).
+- Monitor agent, live on Claude Sonnet 5.5: off-task or injected calls that got through fell from 7 of 11 (rules
+  alone) to 0 of 11, with no extra friction on on-task calls; about 2 s per review.
 - `decide()` p99 is 0.04 ms, 25 times under the 1 ms target. See [benchmarks](docs/benchmarks.md).
 
 ## Limitations

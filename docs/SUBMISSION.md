@@ -31,7 +31,9 @@ Read more: [how it works](how-it-works.md) · [architecture](architecture.md) ·
 
 ## Supporting evidence
 
-- 650 tests, 94% coverage, `mypy --strict`.
+- 655 tests, 95% coverage, `mypy --strict`.
+- Monitor agent live on Claude Sonnet 5.5 (2026-11-10): off-task or injected calls allowed with no human fell from 7
+  of 11 (rules alone) to 0 of 11; on-task calls held stayed at 2 of 9; p50 2.0 s per review.
 - 22 red-team tests built from real incidents and attacks; 9 run and pass today: [results](red-team.md).
 - Property-based tests: any change to the arguments changes the call fingerprint that approvals are bound to, and
   generated obfuscations of `rm -rf` are never allowed.

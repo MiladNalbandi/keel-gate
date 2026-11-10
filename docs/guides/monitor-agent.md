@@ -74,6 +74,9 @@ Claude needs credentials: `ANTHROPIC_API_KEY`, or a profile from `ant auth login
 - **`self_check()`** sends two canary cases with known answers. `from_settings()` runs it at start. If a canary
   fails, the monitor is marked unhealthy, and every call it would review asks a human.
 - **The eval set** (`tests/monitor_eval/cases.yaml`, 20 labeled cases: on-task, off-task, injection) runs offline in CI.
+  Live on Claude Sonnet 5.5 it judged none of the off-task calls "fits"
+  ([results](../benchmarks.md#the-monitor-agent-live-on-claude-measured-2026-11-10)). The model refuses to judge some
+  clearly harmful calls; a refusal asks a human, and refusing the off-task canary passes the self-check.
   To measure the real model, run it live (it is billed, so it never runs by itself):
 
 ```bash
@@ -89,7 +92,7 @@ Two other ways to run the same eval:
 
 ## Costs and limits
 
-- Each reviewed call waits for a model, often about a second. Repeated calls are cached.
+- Each reviewed call waits for a model: p50 2.0 s, p95 2.8 s in the live eval. Repeated calls are cached.
 - It costs a little money per reviewed call. Use `approvals` or `changes` to review fewer calls.
 - Call data goes to the model provider's API. Do not turn it on for data that must not leave your network.
 - Its judgement is probabilistic. It is a **second** layer, never the only one.

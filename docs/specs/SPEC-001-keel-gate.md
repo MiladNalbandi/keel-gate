@@ -505,3 +505,6 @@ review tried to break the monitor and found gaps; each is now covered by a test.
 - **AC-212, YAML.** An unquoted `mode: off` (which YAML reads as `false`) means off. A boolean `timeout_s` is rejected.
 - **AC-224, checked at start.** `MonitoredGate.from_settings()`, the production entry point, runs `self_check()`
   before returning.
+- **AC-214 and AC-224, refusals (found by the first live eval).** A refusal (`stop_reason: "refusal"`) is its own
+  error, `MonitorRefusedError`. In a review it is a failure (`on_error`, ask by default). In the self-check, refusing
+  the off-task canary is a correct answer, because a refusal is never "fits"; refusing the on-task canary fails.

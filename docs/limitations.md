@@ -33,7 +33,8 @@ Here is what it does not do, honestly.
 
 - **Its judgement is probabilistic.** It can miss an off-task call or flag a good one. It is a second layer, never the
   only one, and it can only make answers stricter.
-- **It adds delay and cost** to every call it reviews (often about a second). The modes and the cache keep this down.
+- **It adds delay and cost** to every call it reviews (p50 2.0 s, p95 2.8 s in the live eval). The modes and the
+  cache keep this down.
 - **Call data goes to the model API.** Secrets are redacted by pattern, which catches common token shapes but not every
   secret. Keep it off for data that must not leave your network.
 - **The task (intent) must come from your app.** If the app passes text the agent wrote, the agent can describe its own
