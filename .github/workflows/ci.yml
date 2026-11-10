@@ -12,8 +12,6 @@ jobs:
   code:
     name: lint, types, tests
     runs-on: ubuntu-latest
-    # Runs once the keel_gate package exists (Day 1 afternoon onward).
-    if: ${{ hashFiles('keel_gate/__init__.py') != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
