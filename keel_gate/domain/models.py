@@ -87,6 +87,9 @@ class Session:
     on_behalf_of: str | None = None
     workspace: str | None = None
     taint: frozenset[Taint] = field(default_factory=frozenset)
+    # The user's task, set by the application from the user's own messages; never from tool arguments, tool results,
+    # or the agent's decide request. Only the Monitor agent reads it (AC-216).
+    intent: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

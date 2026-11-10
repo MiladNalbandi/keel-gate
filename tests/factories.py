@@ -148,3 +148,89 @@ class FakeClock:
         from datetime import timedelta
 
         self.now = self.now + timedelta(**delta)
+
+
+# ---------- monitor (Amendment A3) ----------
+
+TASK = "Fix the failing test in tests/test_cart.py."
+
+
+class ScriptedReviewer:
+    """A Reviewer for tests. Each answer is a ReviewResult, an exception to raise, or a callable(request)."""
+
+    def __init__(self, *answers: Any, delay_s: float = 0.0) -> None:
+        self.answers = list(answers) or [_fits()]
+        self.delay_s = delay_s
+        self.requests: list[Any] = []
+
+    def review(self, request: Any) -> Any:
+        import time
+
+        self.requests.append(request)
+        if self.delay_s:
+            time.sleep(self.delay_s)
+        answer = self.answers[min(len(self.requests), len(self.answers)) - 1]
+        if isinstance(answer, BaseException):
+            raise answer
+        if callable(answer):
+            return answer(request)
+        return answer
+
+
+def _fits() -> Any:
+    from keel_gate.domain.review import ReviewResult
+
+    return ReviewResult("fits", "the call serves the task")
+
+
+def verdict(kind: str, reason: str = "scripted answer") -> Any:
+    from keel_gate.domain.review import ReviewResult
+
+    return ReviewResult(kind, reason)  # type: ignore[arg-type]
+
+
+def text_block(text: str) -> Any:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(type="text", text=text)
+
+
+def model_answer(kind: str = "fits", reason: str = "ok", **extra: Any) -> Any:
+    """A fake Messages API response whose only block is the monitor's JSON answer."""
+    import json
+
+    return model_response(text_block(json.dumps({"verdict": kind, "reason": reason, **extra})))
+
+
+def model_response(*content: Any, stop_reason: str = "end_turn", **fields: Any) -> Any:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(stop_reason=stop_reason, content=list(content), **fields)
+
+
+class FakeAnthropic:
+    """Stands in for anthropic.Anthropic: records every request, returns scripted responses, never uses the network."""
+
+    def __init__(self, *responses: Any, delay_s: float = 0.0) -> None:
+        from types import SimpleNamespace
+
+        self.responses = list(responses) or [model_answer()]
+        self.delay_s = delay_s
+        self.requests: list[dict[str, Any]] = []
+        self.options: list[dict[str, Any]] = []
+        self.messages = SimpleNamespace(create=self._create)
+
+    def with_options(self, **options: Any) -> FakeAnthropic:
+        self.options.append(options)
+        return self
+
+    def _create(self, **request: Any) -> Any:
+        import time
+
+        self.requests.append(request)
+        if self.delay_s:
+            time.sleep(self.delay_s)
+        response = self.responses[min(len(self.requests), len(self.responses)) - 1]
+        if isinstance(response, BaseException):
+            raise response
+        return response

@@ -63,6 +63,10 @@ can approve, and only one exact call at a time.
 | **D**enial of service | runaway loops, approval spam | breaker, rate limits, kill switch | AC-100, AC-101 |
 | **E**levation of privilege | the agent uses prod creds, or another customer's data | vault, protected environments, identity from the session | AC-080 – AC-082 |
 | **E**levation of privilege | the agent calls the rule API to allow itself | agent keys get 403; only policy admins with step-up can change rules | AC-195 |
+| **T**ampering | injected text in the call's arguments tells the Monitor agent to answer "fits" | the monitor can only raise; data blocks cannot be closed from inside; it never sees tool results | AC-213, AC-216, AC-218 |
+| **E**levation of privilege | the Monitor agent itself acts (calls a tool) | the request has no tools; any answer other than one JSON object is rejected and asks a human | AC-222, AC-223 |
+| **D**enial of service | the Monitor agent is down or slow | hard timeout, no retries; the call asks a human (never allow) | AC-214, AC-220 |
+| **I**nformation disclosure | call data sent to the model API | the monitor is off by default; secrets redacted before sending | AC-210, AC-217 |
 | **T**ampering | a stolen admin session weakens the rules | step-up, separate admin role, audit + one-step rollback, the safety floor no rule can lower, optional git-only | AC-192, AC-196 – AC-198 |
 
 ## OWASP Top 10 for LLM Applications (2025)
@@ -83,7 +87,7 @@ can approve, and only one exact call at a time.
 
 | Risk | keel-gate control |
 |---|---|
-| ASI01 Agent goal hijack | taint raise; tool output has no authority |
+| ASI01 Agent goal hijack | taint raise; tool output has no authority; the optional Monitor agent checks each call against the user's task |
 | ASI02 Tool misuse and exploitation | manifest, tiers, shell AST, egress |
 | ASI03 Identity and privilege abuse | vault, identity from the session, protected environments |
 | ASI04 Agentic supply chain | tool pins, unknown tool = deny |
@@ -103,7 +107,7 @@ can approve, and only one exact call at a time.
 | Is there a human in or on the loop? | Yes: T2 = human in the loop; mandates = human on the loop with limits (AC-040, AC-050). |
 | Model-level safety? | Out of scope for the gate; we assume the model can be wrong or steered. |
 | Guardrails inside tools? | The gate runs tools with gate-held credentials and postchecks (AC-081, AC-112). |
-| Input/output screening? | Taint labels; optional detectors can only raise risk (stretch). |
+| Input/output screening? | Taint labels; the optional Monitor agent judges each call against the task and can only raise risk (AC-210 – AC-224). |
 | Tested against prompt injection? | Yes: red-team suite with real incidents (see [red-team](red-team.md)). |
 
 ## What we do NOT stop (honest limits)

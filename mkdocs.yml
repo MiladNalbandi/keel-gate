@@ -56,6 +56,7 @@ nav:
   - Guides:
       - Add to an existing system: guides/integrate-existing-systems.md
       - Manage rules and tools: guides/manage-rules-and-tools.md
+      - Turn on the Monitor agent: guides/monitor-agent.md
       - Protect Claude Code: guides/protect-claude-code.md
       - Protect a Claude API app: guides/protect-claude-api-app.md
       - Protect an OpenAI app: guides/protect-openai-app.md
@@ -93,6 +94,7 @@ nav:
           - 0009 Observe mode: adr/0009-observe-mode-with-safety-floor.md
           - 0010 Draft manifests: adr/0010-draft-manifests.md
           - 0011 Human-managed rules: adr/0011-human-managed-rules.md
+          - 0012 Monitor agent: adr/0012-monitor-agent-raise-only.md
   - Help:
       - FAQ: faq.md
       - Glossary: glossary.md

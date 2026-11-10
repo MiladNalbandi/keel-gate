@@ -34,3 +34,6 @@ audit.jsonl
 .DS_Store
 .idea/
 .vscode/
+
+# Local tool state
+.serena/

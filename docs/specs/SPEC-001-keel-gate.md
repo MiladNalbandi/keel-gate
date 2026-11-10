@@ -390,3 +390,118 @@ AC-200 With 1,000 custom rules loaded, decide() keeps p99 below 1 ms (rules are 
 
 **Contract impact:** new endpoints under `/v1/rules`, `/v1/tools`, `/v1/policy/versions`, and `/v1/step-up`
 ([`openapi.yaml`](../api/openapi.yaml)).
+
+## Amendment — 2026-11-10 (A3): the Monitor agent (optional, raise-only, read-only judge)
+
+**Why:** rules cannot judge *intent*. Editing `.github/workflows/ci.yml` is normal when the task is "fix CI" and
+suspicious when the task is "summarize the README". Teams that want more control asked for a second check: a model that
+watches each call and judges whether it fits the user's task. The project owner asked for several modes, Claude Sonnet 5.5
+by default, "ask a human" when the monitor fails, and a monitor that is **only a read-only judge**, with no tool calling,
+whose own answers are validated. Approved by the project owner on 2026-11-10.
+Decision: [ADR 0012](../adr/0012-monitor-agent-raise-only.md).
+
+**New words**
+
+| Word | Meaning |
+|---|---|
+| **Monitor** | An optional model that judges one proposed call against the user's task. It has no tools and only returns a verdict. |
+| **Intent** | The user's task for this session, set by the application from the user's own messages. |
+| **Monitor verdict** | `fits` (the call serves the task), `ask` (a human should confirm), or `block` (it does not serve the task). |
+| **Canary** | A fixed test case with a known right answer, used to check that the monitor works. |
+
+### W. Modes and scope
+
+```
+AC-210 The gate has an optional monitor with a mode: off (default), approvals, changes, or strict. With mode off
+       (or no monitor setting) no call is reviewed and no model is called.
+AC-211 The mode decides which calls are reviewed: approvals → only calls the rules answered with ask; changes → every
+       call the rules did not deny whose tier is above T0; strict → every call the rules did not deny. A call the
+       rules denied is never sent to the monitor.
+AC-212 The monitor's mode, model, timeout, and failure verdict are read only from the gate's config file. No API
+       endpoint, tool argument, or agent message can change them.
+```
+
+### X. Raise-only
+
+```
+AC-213 The final verdict is the more restrictive of the rules' decision and the monitor's verdict: fits → unchanged;
+       ask → at least ask; block → deny. Both raise the tier to at least T2 and add the rule monitor_flagged with the
+       reason "monitor: <reason>". The monitor never lowers a verdict and never removes a rule id or reason.
+AC-214 If the review fails (error, timeout, refusal, an answer that fails validation, an unhealthy monitor, or a session
+       without intent), the call gets the failure verdict from the config (ask by default, or deny), tier at least T2,
+       and the rule monitor_error. A deny from the rules still wins.
+AC-215 In observe mode a monitor answer stricter than allow is only recorded: observed_verdict is raised and the reason
+       "observe mode: would have <asked|denied>" is kept up to date. Only the safety floor (AC-181) blocks.
+```
+
+### Y. What the monitor sees
+
+```
+AC-216 The monitor sees only: the session's intent, the tool name and description, the call's arguments, and the rules'
+       verdict, tier, and reasons. It never sees tool results. The intent is set by the application from the user's
+       own messages; it never comes from tool arguments, tool results, or the agent's decide request.
+AC-217 Before anything is sent, secret-looking values in the arguments and the intent are replaced with [redacted]:
+       API keys and tokens, private keys, bearer tokens, passwords in URLs, and values of keys named like password,
+       secret, token, or api_key.
+AC-218 The system prompt is one fixed string, identical for every call. The task and the call are placed in delimited
+       data blocks that the system prompt marks as data, not instructions; the data cannot close its own block.
+```
+
+### Z. Fast and recorded
+
+```
+AC-219 With the monitor off, decide() is unchanged and the model SDK is not imported (AC-160 still holds).
+AC-220 A review has a hard timeout (default 5 s, at most 30 s) and no automatic retries. A timeout is a failure (AC-214).
+AC-221 Reviews are cached by call hash, intent hash, mode, model, and the rules' verdict and tier, with at most 1,024
+       entries. Failures are not cached.
+```
+
+### AA. A read-only judge, validated
+
+```
+AC-222 The monitor is a judge with no tools. The request to the model has a fixed set of keys and contains no tools,
+       server tools, MCP servers, or containers; the reviewer refuses extra request options when it is created. An answer
+       with any block other than exactly one text block (thinking and fallback notes are ignored) is a failure (AC-214).
+       The monitor receives only immutable values and returns only a verdict and a reason.
+AC-223 Every answer is validated against a strict schema: an object with exactly verdict (fits, ask, or block) and
+       reason (a string). Anything else is a failure. The reason is cleaned before a human or the model sees it:
+       control characters and angle brackets are removed, whitespace is collapsed, and it is cut to 200 characters.
+AC-224 self_check() sends two fixed canary cases: one that clearly fits its task and one that clearly does not. If an
+       answer is wrong or fails, the monitor is marked unhealthy, every call it would review gets the failure verdict
+       (AC-214), and an error is logged. A later self_check() that passes marks it healthy again.
+```
+
+**Contract impact:** `Session` gains the optional field `intent`. `Decision` is unchanged; the new rule ids are
+`monitor_flagged` and `monitor_error`. The Gate Service takes the intent when the application opens a session (Day 3);
+`/v1/decide` never accepts it, because the agent must not describe its own task.
+
+**Out of scope for A3:** the monitor reading tool results or the whole conversation; the monitor lowering a verdict
+(auto-approval); several monitors voting; models from other providers (the `Reviewer` port allows them later).
+
+**Clarifications of A3 after the security review (2026-11-10, before the first commit of A3).** An independent
+review tried to break the monitor and found gaps; each is now covered by a test.
+
+- **AC-222, no other model may answer.** The request asks for no model fallbacks. An answer served by a different model
+  (a `fallback` block, a `fallback_message` iteration, or another model name) is a failure. A refusal must stay a
+  failure (ask), not become a "fits" from a fallback model.
+- **AC-223, strict JSON means no repeated keys.** `{"verdict": "block", "verdict": "fits"}` is a failure.
+- **AC-223, the agent never reads the monitor's words.** When the monitor raises a call, the agent model gets a fixed
+  message ("the monitor judged that this call does not clearly fit the user's task", or "the monitor could not review
+  this call"). The monitor's own reason is model-written text that attacker-chosen arguments can steer, so it goes
+  only to humans and the audit log.
+- **AC-221, the cache key is the whole review request** (task, call, description, the rules' verdict, tier, and
+  reasons) plus the mode, model, and effort.
+- **AC-220, bounded reviews.** At most 8 reviews run at once. When all are taken (for example by a hung model), the
+  call gets the failure verdict at once instead of waiting in a queue. A timed-out review that has not started is
+  cancelled.
+- **AC-214, more failures.** A review request larger than 32,000 characters of arguments or 8,000 characters of task
+  is not reviewed (cutting it could hide the dangerous part): failure. Any exception from the reviewer, even
+  `SystemExit`, is a failure; `decide()` never raises.
+- **AC-218, ASCII only.** All data in the prompt is escaped to ASCII, so look-alike or invisible characters cannot
+  pose as block tags.
+- **AC-217, more secret shapes:** Stripe keys, AWS temporary keys, `Basic` and `Cookie` headers, `--password value`
+  flags, `mysql -pSECRET`, quoted values, passwords in URLs without a user name, and secret-looking mapping keys by
+  their word parts (`DB_PASS`, `apiKey`, `session`), while names like `author` or `tokenizer_name` are kept.
+- **AC-212, YAML.** An unquoted `mode: off` (which YAML reads as `false`) means off. A boolean `timeout_s` is rejected.
+- **AC-224, checked at start.** `MonitoredGate.from_settings()`, the production entry point, runs `self_check()`
+  before returning.

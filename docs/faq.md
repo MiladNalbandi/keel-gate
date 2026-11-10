@@ -4,8 +4,10 @@
 No. It is a safety layer that sits between any agent and its tools.
 
 **Does it use an AI model to decide?**
-No. Decisions are deterministic rules, so they are fast, testable, and cannot be talked out of a "no". Optional AI detectors
-may be added later, and they could only make a decision *stricter*.
+Not by default. Decisions are deterministic rules, so they are fast, testable, and cannot be talked out of a "no".
+For more control you can turn on the optional **Monitor agent**: a model that checks each call against the user's task.
+It can only make a decision *stricter*, it has no tools, and if it fails the call asks a human.
+See [the Monitor agent guide](guides/monitor-agent.md).
 
 **Which agents does it work with?**
 The Claude API, the Claude Agent SDK, Claude Code (on your computer and on the web), OpenAI apps, and any MCP client

@@ -61,7 +61,8 @@ flowchart TB
     TI --> MD[8 mandates<br/>inside limits → allow]
     MD --> E[9 egress + identity + protected paths]
     E --> C[10 combine<br/>deny > ask > allow]
-    C --> OUT[Decision<br/>OWASP ACS shape]
+    C --> MO[11 optional Monitor agent<br/>raise-only, no tools]
+    MO --> OUT[Decision<br/>OWASP ACS shape]
     N -. any error .-> X[deny: gate error]
     S -. any error .-> X
     E -. any error .-> X
@@ -92,6 +93,10 @@ After the decision, `GateService.run()` does:
 | `domain/schema.py` | the strict JSON Schema subset (AC-005) |
 | `domain/rules.py` | custom rules compiled into an immutable index by tool name; floor check (AC-190, AC-197, AC-200) |
 | `domain/draft.py` | draft manifests from MCP / Claude / OpenAI tool definitions (AC-185 – AC-188) |
+| `domain/review.py` | the Monitor agent's pure parts: settings, what it sees, strict answers, canaries (AC-210 – AC-224) |
+| `domain/redact.py` | secret redaction before data leaves the gate (AC-217, later AC-131) |
+| `monitor.py` | `MonitoredGate`: rules first, then the optional raise-only Monitor agent, with timeout, cache, self-check (AC-210 – AC-224) |
+| `adapters/claude_monitor.py` | the Monitor agent on Claude: fixed request keys, no tools, strict JSON answers (AC-218, AC-222, AC-223) |
 | `gate.py` | the pipeline, fail-closed wrapper, time budget, observe mode, atomic index swap (AC-003 – AC-005, AC-031, AC-032, AC-080 – AC-082, AC-100 – AC-112, AC-180 – AC-184, AC-199) |
 | `domain/naming.py` | one tool name for every framework (`server__tool`, `mcp__server__tool` → `server.tool`) (AC-006) |
 | `policy_store.py` | versions, rollback, change records, git-only guard; tells the gate at once (AC-191 – AC-199) |
@@ -171,5 +176,4 @@ Ported from keel v2 (MIT). Each ported file names its source in a header comment
 | `gate.py` integrity part | `engine/keel_engine/runtime/guard_ctx.py` |
 | `tests/ported/` | `engine/tests/test_hook.py`, `test_guard_security.py`, `test_approvals.py`, `test_mcp_gateway.py`, `test_secret_reads.py` |
 
-Ideas from the platform repo: the undo log (`AtlasMutationTracker.kt`, `AtlasUndo.kt`), propose-don't-run (`PendingAction`),
-and the claim checker (`ControllerClaims.kt`).
+Ideas from an earlier private project: an undo log, "propose, don't run" actions, and a claim checker.

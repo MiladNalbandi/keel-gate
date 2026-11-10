@@ -101,6 +101,17 @@ deny  >  ask  >  allow
 
 Any error in any step means **deny** (fail closed).
 
+### 11. Optional: the Monitor agent judges intent
+
+Rules cannot see intent. For teams that want more control, a model can review each call that the rules did not deny.
+It reads the user's task and the call, and answers *fits*, *ask*, or *block*.
+
+- It can only make the answer **stricter**. A monitor that is fooled changes nothing.
+- It is a **read-only judge**: it has no tools, and its answer must be one strict JSON object.
+- If it fails or is slow, the call **asks a human**.
+
+Modes: `off` (default), `approvals`, `changes`, `strict`. See [the Monitor agent guide](guides/monitor-agent.md).
+
 ## After the decision
 
 - **allow:**

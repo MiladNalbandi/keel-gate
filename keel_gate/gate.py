@@ -18,6 +18,7 @@ from keel_gate.domain.classify import DEFAULT_PROTECTED_BRANCHES, ShellContext, 
 from keel_gate.domain.combine import combine, message_for
 from keel_gate.domain.manifest import Manifest, ManifestError
 from keel_gate.domain.models import Decision, Finding, Session, Tier, ToolCall, Verdict
+from keel_gate.domain.review import MonitorSettings
 from keel_gate.domain.rules import CustomRule, RuleIndex, apply_rules
 from keel_gate.domain.schema import validate
 
@@ -53,6 +54,7 @@ class GateSettings:
     time_budget_s: float = 0.2
     protected_branches: tuple[str, ...] = field(default=DEFAULT_PROTECTED_BRANCHES)
     policy_changes: PolicyChanges = "ui"
+    monitor: MonitorSettings = field(default_factory=MonitorSettings)
 
     def __post_init__(self) -> None:
         if self.mode not in get_args(Mode):
@@ -61,13 +63,15 @@ class GateSettings:
             raise ValueError("invalid gate config: policy_changes must be ui or git")
         if not 0 < self.time_budget_s <= 5:
             raise ValueError("invalid gate config: time_budget_s must be between 0 and 5 seconds")
+        if not isinstance(self.monitor, MonitorSettings):
+            raise ValueError("invalid gate config: monitor must be a monitor section")
 
 
-_SETTING_KEYS = frozenset({"mode", "time_budget_s", "protected_branches", "policy_changes"})
+_SETTING_KEYS = frozenset({"mode", "time_budget_s", "protected_branches", "policy_changes", "monitor"})
 
 
 def load_settings(config: Mapping[str, Any]) -> GateSettings:
-    """Settings from the gate's config file (keel-gate.yaml). The mode can only come from here (AC-184)."""
+    """Settings from the gate's config file (keel-gate.yaml). The modes can only come from here (AC-184, AC-212)."""
     if not isinstance(config, Mapping):
         raise ValueError("invalid gate config: it must be a mapping")
     unknown = set(config) - _SETTING_KEYS
@@ -76,6 +80,8 @@ def load_settings(config: Mapping[str, Any]) -> GateSettings:
     values = dict(config)
     if "protected_branches" in values:
         values["protected_branches"] = tuple(values["protected_branches"])
+    if "monitor" in values:
+        values["monitor"] = MonitorSettings.from_mapping(values["monitor"])
     return GateSettings(**values)
 
 

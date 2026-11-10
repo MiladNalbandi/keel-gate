@@ -37,6 +37,9 @@ Simple meanings for the words used in this project.
 | **Observe mode** | keel-gate watches and logs what it *would* do, but still blocks catastrophic actions. Used before switching to enforce. |
 | **Safety floor** | The blocks that stay on in every mode and that no custom rule can remove (for example `rm -rf ~`, `DROP TABLE`). |
 | **Draft manifest** | Tool descriptions generated from your existing tool definitions, waiting for a human to review them. |
+| **Monitor agent** | An optional model that checks each call against the user's task. It has no tools, and it can only make the answer stricter. |
+| **Intent** | The user's task for a session, set by your app from the user's own messages. The Monitor agent compares calls with it. |
+| **Canary** | A test case with a known right answer. The Monitor agent's self-check uses two of them. |
 | **Custom rule** | A rule a human adds in the UI, the CLI, or `policies/custom.yaml`: block, ask, or allow for a tool. |
 | **Step-up** | A quick re-confirmation (password or passkey) before changing rules. |
 | **Policy admin** | The human role that may change rules and tools. |

@@ -37,6 +37,7 @@ marked *(unverified)*.
 | Circuit breaker: 3 in a row / 20 total | Anthropic Claude Code auto mode ([blog](https://www.anthropic.com/engineering/claude-code-auto-mode)) |
 | Outgoing promises are actions | Air Canada chatbot ruling (2024 BCCRT 149) |
 | Detectors can only raise risk | Google Layer 2; ElevenLabs guardrails *(fail-open report unverified)* |
+| A model reviews each action against the user's goal (our optional Monitor agent) | Google "Approach for Secure AI Agents" Layer 2 (reasoning-based defenses); Claude Code auto mode (the reviewer sees the user's messages and the tool call, not tool results); OpenAI Codex auto-review; Meta LlamaFirewall AlignmentCheck |
 
 ## 3. How real coding agents control risky actions
 

