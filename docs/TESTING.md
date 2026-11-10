@@ -10,7 +10,7 @@ uv sync --all-extras
 uv run pytest -q                       # everything
 uv run pytest -m redteam -q            # only the attack scenarios
 uv run pytest --cov --cov-report=term  # with coverage (core must be at least 90%)
-uv run python bench/bench_decide.py    # speed check (p99 < 1 ms)
+uv run pytest -q tests/perf            # speed check (p99 < 1 ms)
 ```
 
 ## The test pyramid
@@ -111,8 +111,9 @@ acs: [AC-023, AC-082]
 
 ## Speed
 
-`bench/bench_decide.py` runs 10,000 mixed calls (60% read, 25% shell, 10% refund, 5% egress) and prints p50, p95, and p99.
-The target is p99 < 1 ms on a laptop (AC-160). CI runs a smaller smoke version with a looser limit, because CI machines vary.
+`tests/perf/test_speed.py` runs 99 mixed calls 100 times (file reads, shell commands, refunds, web fetches) and checks p99.
+The target is p99 < 1 ms on a laptop (AC-160). In CI the limit is 5 ms, because CI machines vary. Numbers:
+[benchmarks](benchmarks.md).
 
 ## CI gates (every push)
 

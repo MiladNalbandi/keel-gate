@@ -34,7 +34,7 @@ A review that is not cached waits for the model. That time is network plus model
 with the live eval, which is billed, so it never runs by itself:
 
 ```bash
-uv run python scripts/monitor_eval.py --run
+uv run --extra anthropic python scripts/monitor_eval.py --run
 ```
 
 It prints accuracy, the false-block rate, the miss rate, and p50/p95 latency for 2 canaries plus 20 labeled cases.

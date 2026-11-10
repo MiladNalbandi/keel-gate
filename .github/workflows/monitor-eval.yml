@@ -1,0 +1,35 @@
+name: Monitor eval (live, billed)
+
+# The live eval of the Monitor agent (scripts/monitor_eval.py) against Claude. It uses the ANTHROPIC_API_KEY secret
+# and costs a few cents, so it runs only when the owner starts it by hand. Pull requests and forks never run it.
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Claude model id
+        required: true
+        default: claude-sonnet-5-5
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    if: github.repository == 'MiladNalbandi/keel-gate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked --extra anthropic --python 3.12
+      - name: run the eval
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MODEL: ${{ inputs.model }}
+        run: uv run --locked python scripts/monitor_eval.py --run --model "$MODEL" --out monitor-eval.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: monitor-eval
+          path: monitor-eval.json
+          if-no-files-found: warn

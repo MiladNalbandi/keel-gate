@@ -77,8 +77,15 @@ Claude needs credentials: `ANTHROPIC_API_KEY`, or a profile from `ant auth login
   To measure the real model, run it live (it is billed, so it never runs by itself):
 
 ```bash
-uv run python scripts/monitor_eval.py --run
+uv run --extra anthropic python scripts/monitor_eval.py --run
 ```
+
+Two other ways to run the same eval:
+
+- **No API key, but a Claude subscription:** `--via claude-code` sends the same prompt through `claude -p`, with safe
+  mode on and every tool turned off. The numbers include the CLI start-up time, so the model time is printed too.
+- **In GitHub Actions:** add an `ANTHROPIC_API_KEY` repository secret, then start the **Monitor eval** workflow by
+  hand. It uploads `monitor-eval.json` as an artifact. It never runs on pushes, pull requests, or forks.
 
 ## Costs and limits
 
