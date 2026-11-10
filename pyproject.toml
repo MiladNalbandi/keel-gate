@@ -69,6 +69,8 @@ packages = ["keel_gate"]
 line-length = 120
 target-version = "py312"
 src = ["."]
+# Never lint environments or build output, whatever they are named (for example .venv-312 in CI or on a server).
+extend-exclude = [".venv*", "venv*", "site", "logs", ".serena"]
 
 [tool.ruff.lint]
 select = [
