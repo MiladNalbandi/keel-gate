@@ -13,8 +13,9 @@ If both canaries fail, it stops before the 20 cases.
 Two ways to reach the model:
 
 - `--via api` (default): ClaudeReviewer, the production path. Needs ANTHROPIC_API_KEY or an `ant` profile.
-- `--via claude-code`: for owners with a Claude subscription and no API key. The same system prompt, data blocks and
-  answer checks, sent through the Claude Code CLI. Safe mode turns off CLAUDE.md, plugins, hooks and MCP servers, and
+- `--via claude-code`: for owners with a Claude subscription and no API key (the CLI's login, or
+  CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`). The same system prompt, data blocks and answer checks, sent
+  through the Claude Code CLI. Safe mode turns off CLAUDE.md, plugins, hooks and MCP servers, and
   `--tools ""` turns off every tool, so the model is still a judge with no tools. Latency includes the CLI start-up,
   so the API time (`duration_api_ms`) is reported too.
 """
@@ -96,8 +97,10 @@ class ClaudeCodeReviewer:
             "--system-prompt",
             SYSTEM_PROMPT,
         ]
-        # The CLI's own login, not settings inherited from a parent Claude Code session.
-        self._env = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDE", "ANTHROPIC"))}
+        # The CLI's own login (or a CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`, as in CI), not settings
+        # inherited from a parent Claude Code session.
+        keep = {"CLAUDE_CODE_OAUTH_TOKEN"}
+        self._env = {k: v for k, v in os.environ.items() if k in keep or not k.startswith(("CLAUDE", "ANTHROPIC"))}
 
     def review(self, request: ReviewRequest) -> ReviewResult:
         self.last_api_ms = None

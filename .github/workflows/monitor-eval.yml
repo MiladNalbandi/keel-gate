@@ -1,7 +1,10 @@
 name: Monitor eval (live, billed)
 
-# The live eval of the Monitor agent (scripts/monitor_eval.py) against Claude. It uses the ANTHROPIC_API_KEY secret
-# and costs a few cents, so it runs only when the owner starts it by hand. Pull requests and forks never run it.
+# The live eval of the Monitor agent (scripts/monitor_eval.py) against Claude. It runs only when the owner starts it
+# by hand; pull requests and forks never run it. The ANTHROPIC_API_KEY secret may hold either:
+# - a Console API key: the eval uses the Messages API (the production path, billed per request), or
+# - a Claude subscription token from `claude setup-token` (sk-ant-oat…): the eval goes through Claude Code (`claude -p`).
+# The step prints only which kind it found, never the value.
 on:
   workflow_dispatch:
     inputs:
@@ -24,9 +27,25 @@ jobs:
       - run: uv sync --locked --extra anthropic --python 3.12
       - name: run the eval
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SECRET: ${{ secrets.ANTHROPIC_API_KEY }}
           MODEL: ${{ inputs.model }}
-        run: uv run --locked python scripts/monitor_eval.py --run --model "$MODEL" --out monitor-eval.json
+        run: |
+          key="$(printf '%s' "$SECRET" | tr -d '[:space:]')"
+          echo "::add-mask::$key"
+          if [ "$key" != "$SECRET" ]; then echo "note: removed spaces or line breaks around the secret"; fi
+          case "$key" in
+            sk-ant-oat*)
+              echo "credential: Claude subscription token, so the eval runs through Claude Code"
+              npm install --global --silent @anthropic-ai/claude-code@2.1.285
+              CLAUDE_CODE_OAUTH_TOKEN="$key" uv run --locked python scripts/monitor_eval.py --run --via claude-code \
+                --model "$MODEL" --out monitor-eval.json
+              ;;
+            *)
+              echo "credential: API key, so the eval uses the Messages API"
+              ANTHROPIC_API_KEY="$key" uv run --locked python scripts/monitor_eval.py --run --via api \
+                --model "$MODEL" --out monitor-eval.json
+              ;;
+          esac
       - uses: actions/upload-artifact@v4
         if: always()
         with:
