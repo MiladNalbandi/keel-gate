@@ -12,21 +12,22 @@ How fast is `decide()`? The target is **p99 below 1 ms** (AC-160), also with 1,0
 - The timer covers the whole `decide()` call, from the tool call in to the Decision out.
 - Script: the same calls as `tests/perf/test_speed.py`, which also runs in CI with a looser limit.
 
-## Results (measured 2026-11-10)
+## Results (measured 2026-11-11, after the Amendment A4 rule changes)
 
 | Setup | p50 | p95 | p99 |
 |---|---|---|---|
-| Rules only, no custom rules | 0.008 ms | 0.011 ms | 0.015 ms |
-| Rules only, 1,000 custom rules | 0.008 ms | 0.020 ms | 0.040 ms |
-| `MonitoredGate`, monitor `off` | 0.008 ms | 0.011 ms | 0.015 ms |
-| `MonitoredGate`, `strict`, answer already cached | 0.034 ms | 0.046 ms | 0.050 ms |
+| Rules only, no custom rules | 0.009 ms | 0.020 ms | 0.029 ms |
+| Rules only, 1,000 custom rules | 0.009 ms | 0.030 ms | 0.055 ms |
+| `MonitoredGate`, monitor `off` | 0.009 ms | 0.019 ms | 0.029 ms |
+| `MonitoredGate`, `strict`, answer already cached | 0.037 ms | 0.052 ms | 0.058 ms |
 
-Machine: Apple Silicon laptop (arm64), Python 3.12.7. On the Linux test server (Python 3.12), three runs measured
-p99 0.052–0.078 ms with no custom rules and 0.102–0.127 ms with 1,000 rules.
+Machine: Apple Silicon laptop (arm64), Python 3.12.7. Three runs; the table shows a typical one. The highest p99 in
+the three runs was 0.094 ms (`strict`, cached). The A4 rules check more per command, so p99 roughly doubled from the
+2026-11-10 numbers (0.015 ms with no custom rules, 0.040 ms with 1,000). Before A4, the Linux test server (Python
+3.12) measured p99 0.052–0.078 ms with no custom rules and 0.102–0.127 ms with 1,000 rules; it was not re-run after A4.
 
-**In short:** every setup is at least 20 times under the 1 ms target on the laptop, and at least 7 times under it on
-the server. The Monitor agent adds nothing when it is
-off. A cached review costs about 0.03 ms more, mostly secret redaction of the call.
+**In short:** every setup is at least 10 times under the 1 ms target on the laptop. The Monitor agent adds nothing
+when it is off. A cached review costs about 0.03 ms more, mostly secret redaction of the call.
 
 ## The Monitor agent, live on Claude (measured 2026-11-10)
 

@@ -11,8 +11,8 @@
 > **Part of [Keel](https://github.com/MiladNalbandi/keel-v2).** keel-gate is Keel's action gate, moved into its own
 > repo for the Drawerrr AI Safety Challenge *Prevent irreversible autonomous actions*.
 >
-> **Status (Nov 10, 2026): working prototype.** Built and tested: the decision engine and the optional Monitor agent.
-> Next: approvals, mandates, protected paths, taint, egress, the demo, and the adapters. 🔜 marks planned parts.
+> **Status (Nov 11, 2026): working prototype.** Built and tested: the decision engine, protected paths, and the
+> optional Monitor agent. Next: approvals, mandates, taint, egress, the demo, and the adapters. 🔜 marks planned parts.
 
 ## What it stops
 
@@ -22,7 +22,7 @@
 | the same, hidden: `bash -c '…'`, base64 piped to `sh`, `"r""m" -rf ~` | ⛔ / 📱 parses the shell for real |
 | a $500 refund, `curl` to an unknown host | 📱 asks a human (one-time approval tokens 🔜) |
 | editing CI when you asked for a README summary | ⛔ / 📱 the optional Monitor agent flags it |
-| editing its own settings (`.claude/`, `.mcp.json`) | 🔜 protected paths (Day 2) |
+| editing its own settings or git hooks (`.claude/`, `.mcp.json`, `.git/hooks`) | ⛔ blocks: protected paths |
 | reading `.env`, then sending it out | 📱 asks today; ⛔ with taint + egress 🔜 |
 
 When something is blocked, the model gets a clear tool error, so it can stop or ask you.
@@ -32,8 +32,8 @@ When something is blocked, the model gets a clear tool error, so it can stop or 
 ```bash
 git clone https://github.com/MiladNalbandi/keel-gate && cd keel-gate
 uv sync
-uv run pytest -q               # 655 tests
-uv run pytest -q -m redteam    # attacks taken from real incidents
+uv run pytest -q               # 787 tests
+uv run pytest -q -m redteam    # attacks from real incidents and our own red team
 ```
 
 ## Use it in your code
@@ -74,12 +74,15 @@ Details: [how it works](docs/how-it-works.md).
 
 ## Evidence
 
-- 655 tests, 95% coverage, type-checked (`mypy --strict`).
+- 787 tests, 94% coverage, type-checked (`mypy --strict`).
 - 9 of 22 attack tests named after real incidents run and pass today (Replit, Antigravity, Cursor, Ona, goal hijack,
-  injection against the monitor). See [red-team results](docs/red-team.md).
+  injection against the monitor); the rest need planned parts. See [red-team results](docs/red-team.md).
+- Our own red team, in an offline sandbox, found 26 risky calls that got through with no human and 18 catastrophic
+  ones that only asked. All 44 are fixed and stay as tests (7 more attack files, 104 attack steps in total).
 - Monitor agent, live on Claude Sonnet 5.5: off-task or injected calls that got through fell from 7 of 11 (rules
   alone) to 0 of 11, with no extra friction on on-task calls; about 2 s per review.
-- `decide()` p99 is 0.04 ms, 25 times under the 1 ms target. See [benchmarks](docs/benchmarks.md).
+- `decide()` p99 is 0.06 ms with 1,000 custom rules, about 17 times under the 1 ms target. See
+  [benchmarks](docs/benchmarks.md).
 
 ## Limitations
 

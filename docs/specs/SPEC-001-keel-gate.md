@@ -508,3 +508,49 @@ review tried to break the monitor and found gaps; each is now covered by a test.
 - **AC-214 and AC-224, refusals (found by the first live eval).** A refusal (`stop_reason: "refusal"`) is its own
   error, `MonitorRefusedError`. In a review it is a failure (`on_error`, ask by default). In the self-check, refusing
   the off-task canary is a correct answer, because a refusal is never "fits"; refusing the on-task canary fails.
+
+## Amendment — 2026-11-11 (A4): hardened rules after our own red team
+
+**Why:** on 2026-11-10 our own red team attacked the rules in an offline sandbox. Of 49 attacks, 26 risky calls were
+allowed with no human, and 18 catastrophic calls only asked instead of hitting the safety floor. The lesson: a program
+was trusted by its *name*, but safe names have unsafe options. A4 makes "allow" depend on the whole call. The
+findings are red-team cases RT-23 to RT-29; new everyday cases make sure normal work stays allowed. Approved by the
+project owner on 2026-11-11.
+
+### AB. Trust the whole call, not the program name
+
+```
+AC-230 A program run from a path outside the system folders (for example ./cat or a file in node_modules/.bin) is not
+       treated as the known program of that name: ask, rule local_program. /usr/bin/git and similar stay known.
+AC-231 Setting an environment variable that changes which program runs or what code it loads (for example PATH,
+       LD_PRELOAD, BASH_ENV, PAGER) for a command: ask, rule env_hijack.
+AC-232 Code that bash runs from places that look like data (arithmetic, array indexes, printf -v, indirect and
+       prompt expansion) with a variable or command text in it: ask, rule shell_eval. Plain tests such as
+       [[ -f setup.py ]] and default values such as ${HOME:-/tmp} stay allowed.
+AC-233 Tools that only read in normal use (awk, sed, sort, uniq, xxd, tree, gzip, rg, git grep) are allowed only
+       with options known to be safe. An option or script that runs a program, or a script read from a file, asks
+       (argument_injection). An output file follows the write rules (inside the workspace T1; outside ask).
+AC-234 Long options match the way GNU tools and git read them: a unique prefix (--har is --hard) and --name=value.
+AC-235 Git subcommands and options that run programs (bisect run, rebase --exec / -x, submodule foreach,
+       clone --template, archive --exec, grep -O) ask (argument_injection). Git options that write a file
+       (log --output) follow the write rules.
+AC-236 A tool that changes state and is not remote follows the same path rules as a shell write for its path
+       arguments (path, file_path, filename, destination, target): outside the workspace ask
+       (write_outside_workspace); a protected path deny (AC-030).
+AC-237 The safety floor also holds when the action is written another way: after cd or env -C, with brace expansion,
+       through xargs or find (-delete, -exec rm), SQL from stdin, here-strings, heredocs, comments, or --command=,
+       an always-true WHERE, sqlite3 .shell, and clustered curl options. Tools that erase a disk (dd onto a device,
+       mkfs, wipefs, shred on a device, diskutil erase) are denied with the new floor rule disk_wipe.
+AC-238 Every redirect that writes a file (including >& and &>) follows the write rules.
+```
+
+**AC-030 is now built.** Writes to .claude/, .codex/, .cursor/, .vscode/, .mcp.json, .git/hooks/, .git/config, and
+.git itself are denied, by file tools and by shell writes (redirects, cp, mv, ln, tee and similar), also when the link
+target of ln is protected. Matching ignores case. The policy and gate data folders come from protected_paths in
+keel-gate.yaml (default: policy, .keel-gate, keel-gate.yaml). decide() does no file I/O, so it cannot read symlinks
+itself: the host gives a snapshot of known links (path_aliases in keel-gate.yaml), and a cyclic or too deep alias asks.
+Reading a protected path stays allowed.
+
+**Contract impact:** new rule ids local_program, env_hijack, shell_eval, and disk_wipe (a floor rule, AC-181). New
+gate settings protected_paths and path_aliases, read only from keel-gate.yaml (AC-184). decide() stays pure and
+p99 stays under 1 ms (AC-160, AC-200).
