@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import base64
 import binascii
+import posixpath
 import re
 import threading
 from dataclasses import dataclass, replace
 from functools import lru_cache
+from itertools import pairwise
 
 import tree_sitter_bash
 from tree_sitter import Language, Node, Parser
@@ -63,6 +65,9 @@ class SimpleCommand:
     program: str
     args: tuple[Word, ...]
     text: str
+    cwd: str | None = ""
+    stdin: tuple[Word, ...] = ()
+    local_program: bool = False
     dynamic_program: bool = False
     wrapped_by: tuple[str, ...] = ()
     redirects: tuple[Redirect, ...] = ()
@@ -81,6 +86,8 @@ class ShellParse:
     has_substitution: bool = False
     decode_then_run: bool = False
     pipe_to_shell: bool = False
+    shell_eval: bool = False
+    env_hijack: bool = False
     opaque_script: bool = False
     decoded_scripts: tuple[str, ...] = ()
 
@@ -114,10 +121,13 @@ class _Walker:
         self.src = source.encode("utf-8")
         self.depth = depth
         self.commands: list[SimpleCommand] = []
+        self.cwd: str | None = ""
         self.parse_error = False
         self.has_substitution = False
         self.decode_then_run = False
         self.pipe_to_shell = False
+        self.shell_eval = False
+        self.env_hijack = False
         self.opaque_script = False
         self.decoded: list[str] = []
 
@@ -134,6 +144,8 @@ class _Walker:
             has_substitution=self.has_substitution,
             decode_then_run=self.decode_then_run,
             pipe_to_shell=self.pipe_to_shell,
+            shell_eval=self.shell_eval,
+            env_hijack=self.env_hijack,
             opaque_script=self.opaque_script,
             decoded_scripts=tuple(self.decoded),
         )
@@ -145,14 +157,26 @@ class _Walker:
 
     def _visit(self, node: Node, in_sub: bool) -> None:
         kind = node.type
+        self._note_eval(node)
+        if kind == "variable_assignment":
+            name = node.child_by_field_name("name")
+            if name is not None and _hijacks_environment(self._text(name)):
+                self.env_hijack = True
         if kind in ("command_substitution", "process_substitution"):
             self.has_substitution = True
+            previous = self.cwd
             for child in node.named_children:
                 self._visit(child, in_sub=True)
+            self.cwd = previous
         elif kind == "command":
             self._command(node, in_sub)
         elif kind == "redirected_statement":
             self._redirected(node, in_sub)
+        elif kind == "subshell":
+            previous = self.cwd
+            for child in node.named_children:
+                self._visit(child, in_sub)
+            self.cwd = previous
         elif kind == "pipeline":
             self._pipeline(node, in_sub)
         else:
@@ -167,6 +191,7 @@ class _Walker:
                 redirects.append(self._redirect(child))
                 self._scan_substitutions(child, in_sub)
             elif child.type in ("heredoc_redirect", "herestring_redirect"):
+                redirects.append(self._input_redirect(child))
                 self._scan_substitutions(child, in_sub)
             else:
                 self._visit(child, in_sub)
@@ -175,6 +200,14 @@ class _Walker:
                 cmd = self.commands[i]
                 if not cmd.in_substitution or in_sub:
                     self.commands[i] = replace(cmd, redirects=cmd.redirects + tuple(redirects))
+
+    def _input_redirect(self, node: Node) -> Redirect:
+        if node.type == "herestring_redirect":
+            target = self._word(node.named_children[-1])
+        else:
+            body = next((c for c in node.named_children if c.type == "heredoc_body"), None)
+            target = Word(self._text(body), self._text(body)) if body is not None else Word("", None)
+        return Redirect("<<<", target)
 
     def _redirect(self, node: Node) -> Redirect:
         op = next((c.type for c in node.children if not c.is_named), ">")
@@ -192,15 +225,39 @@ class _Walker:
             added = [c for c in self.commands[start:] if c.in_substitution == in_sub]
             if added:
                 stages.append(added[0])
+        # Propagate only literal producer data, never execute it.
+        for producer, consumer in pairwise(stages):
+            payload = _echo_payload(producer)
+            if payload is None:
+                continue
+            for i, command in enumerate(self.commands):
+                if command is consumer:
+                    if "xargs" in command.wrapped_by:
+                        words = tuple(Word(v, v) for v in payload.split())
+                        self.commands[i] = replace(command, args=(*command.args, *words))
+                    else:
+                        self.commands[i] = replace(command, stdin=(*command.stdin, Word(payload, payload)))
         self._check_pipeline(stages)
 
     def _scan_substitutions(self, node: Node, in_sub: bool) -> None:
         """Find command substitutions inside words, assignments, and redirects."""
+        self._note_eval(node)
         for child in node.named_children:
             if child.type in ("command_substitution", "process_substitution"):
                 self._visit(child, in_sub)
             else:
                 self._scan_substitutions(child, in_sub)
+
+    def _note_eval(self, node: Node) -> None:
+        kind, text = node.type, self._text(node)
+        if (
+            kind in ("arithmetic_expansion", "subscript")
+            or (kind == "compound_statement" and text.startswith("(("))
+            or (kind == "test_command" and re.search(r"\s-(?:eq|ne|lt|le|gt|ge|v)\s", text))
+            or (kind == "expansion" and re.search(r"^\$\{!|@P|:[^+?=\-]", text))
+            or (kind == "declaration_command" and re.search(r"\s-[a-zA-Z]*[in]", text))
+        ):
+            self.shell_eval = True
 
     # ------------------------------------------------------------------ words
 
@@ -209,6 +266,8 @@ class _Walker:
         text = self._text(node)
         if kind == "word":
             return _unescape(text)
+        if kind == "ansi_c_string":
+            return _ansi_literal(text[2:-1])
         if kind == "raw_string":
             return text[1:-1]
         if kind == "string":
@@ -229,23 +288,43 @@ class _Walker:
 
     def _command(self, node: Node, in_sub: bool) -> None:
         self._scan_substitutions(node, in_sub)
+        for child in node.named_children:
+            if child.type == "variable_assignment":
+                self._visit(child, in_sub)
         name = node.child_by_field_name("name")
         if name is None:
             return
         name_word = self._word(name)
-        args = tuple(self._word(c) for c in node.children_by_field_name("argument"))
+        args = tuple(w for c in node.children_by_field_name("argument") for w in _brace_words(self._word(c)))
         program = program_name(name_word.value) if name_word.value else ""
         cmd = SimpleCommand(
             program=program,
             args=args,
             text=self._text(node),
+            cwd=self.cwd,
+            redirects=tuple(self._input_redirect(c) for c in node.named_children if c.type == "herestring_redirect"),
+            local_program=_local_program(name_word.value),
             dynamic_program=not program,
             in_substitution=in_sub,
         )
+        if program in ("printf", "test", "[") and any(w.value == "-v" for w in args):
+            self.shell_eval = True
         self._add(cmd)
+        if program in ("cd", "pushd", "popd"):
+            destination = args[0].value if args else "~"
+            if program == "popd" or destination is None or destination == "-" or self.cwd is None:
+                self.cwd = None
+            elif destination.startswith(("/", "~")):
+                self.cwd = destination
+            else:
+                self.cwd = posixpath.normpath(posixpath.join(self.cwd, destination))
 
     def _add(self, cmd: SimpleCommand, rounds: int = 0) -> None:
-        if cmd.dynamic_program or rounds >= MAX_UNWRAP:
+        if cmd.program == "env" and any(
+            _hijacks_environment((w.value or w.raw).split("=", 1)[0]) for w in cmd.args if "=" in (w.value or w.raw)
+        ):
+            self.env_hijack = True
+        if cmd.dynamic_program or cmd.local_program or rounds >= MAX_UNWRAP:
             self.commands.append(cmd)
             return
         if cmd.program in SHELLS:
@@ -276,11 +355,15 @@ class _Walker:
         self._merge_script(script.value, cmd, cmd.program)
 
     def _merge_script(self, script: str, outer: SimpleCommand, wrapper: str) -> None:
-        inner = _Walker(script, depth=self.depth + 1).run()
+        walker = _Walker(script, depth=self.depth + 1)
+        walker.cwd = outer.cwd
+        inner = walker.run()
         self.parse_error |= inner.parse_error
         self.has_substitution |= inner.has_substitution
         self.decode_then_run |= inner.decode_then_run
         self.pipe_to_shell |= inner.pipe_to_shell
+        self.shell_eval |= inner.shell_eval
+        self.env_hijack |= inner.env_hijack
         self.opaque_script |= inner.opaque_script
         self.decoded.extend(inner.decoded_scripts)
         for c in inner.commands:
@@ -456,6 +539,9 @@ def _unwrap(cmd: SimpleCommand) -> SimpleCommand | None:
         program=inner_program,
         args=rest[1:],
         text=cmd.text,
+        cwd=_wrapper_cwd(cmd),
+        stdin=cmd.stdin,
+        local_program=_local_program(head.value),
         dynamic_program=not inner_program,
         wrapped_by=(*cmd.wrapped_by, program),
         redirects=cmd.redirects,
@@ -530,3 +616,91 @@ def _decode(payload: str, kind: str) -> str | None:
         return raw.decode("utf-8").strip() or None
     except (binascii.Error, ValueError, UnicodeDecodeError):
         return None
+
+
+_ENV_EXEC = frozenset({"PATH", "CDPATH", "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "PAGER", "EDITOR", "VISUAL"})
+
+
+def _hijacks_environment(name: str) -> bool:
+    return name in _ENV_EXEC or name.startswith(("LD_", "DYLD_", "GIT_", "PYTHON", "PERL", "RUBY", "NODE_"))
+
+
+def _local_program(value: str | None) -> bool:
+    if value is None or "/" not in value:
+        return False
+    value = value.removeprefix("/proc/self/root")
+    directory = value.rsplit("/", 1)[0]
+    return directory not in {"/bin", "/sbin", "/usr/bin", "/usr/sbin", "/usr/local/bin", "/usr/local/sbin"}
+
+
+def _ansi_literal(text: str) -> str | None:
+    """Decode literal ANSI-C shell escapes without evaluating any shell text."""
+    escapes = {
+        "a": "\a",
+        "b": "\b",
+        "e": "\x1b",
+        "E": "\x1b",
+        "f": "\f",
+        "n": "\n",
+        "r": "\r",
+        "t": "\t",
+        "v": "\v",
+        "\\": "\\",
+        "'": "'",
+        '"': '"',
+    }
+
+    def decode(match: re.Match[str]) -> str:
+        token = match.group(1)
+        if token[0] in "xuU":
+            return chr(int(token[1:], 16))
+        if token[0] in "01234567":
+            return chr(int(token, 8))
+        return escapes.get(token, "\\" + token)
+
+    try:
+        return re.sub(r"\\(x[0-9a-fA-F]{1,2}|u[0-9a-fA-F]{1,4}|U[0-9a-fA-F]{1,8}|[0-7]{1,3}|.)", decode, text)
+    except ValueError:
+        return None
+
+
+def _wrapper_cwd(cmd: SimpleCommand) -> str | None:
+    if cmd.program != "env":
+        return cmd.cwd
+    for i, word in enumerate(cmd.args):
+        value = word.value or ""
+        if value in ("-C", "--chdir"):
+            target = cmd.args[i + 1].value if i + 1 < len(cmd.args) else None
+        elif value.startswith("--chdir="):
+            target = value.split("=", 1)[1]
+        else:
+            continue
+        if target is None or cmd.cwd is None:
+            return None
+        return posixpath.normpath(posixpath.join(cmd.cwd, target))
+    return cmd.cwd
+
+
+def _brace_words(word: Word) -> tuple[Word, ...]:
+    # Braces only expand when unquoted. Unsupported range/nested syntax stays
+    # opaque so the classifier cannot mistake it for a known safe path.
+    quote = ""
+    escaped = False
+    unquoted_brace = False
+    for char in word.raw:
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote != "'":
+            escaped = True
+        elif char == quote:
+            quote = ""
+        elif not quote and char in ("'", '"'):
+            quote = char
+        elif char == "{" and not quote:
+            unquoted_brace = True
+    if not unquoted_brace:
+        return (word,)
+    match = re.fullmatch(r"([^{}]*)\{([^{}]*,[^{}]*)\}([^{}]*)", word.raw)
+    if match:
+        return tuple(Word(word.raw, match[1] + part + match[3]) for part in match[2].split(","))
+    return (Word(word.raw, None),)

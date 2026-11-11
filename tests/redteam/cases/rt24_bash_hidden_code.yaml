@@ -1,0 +1,41 @@
+id: RT-24
+incident: Bash runs $( ) hidden in quoted text when it evaluates arithmetic, a variable name, or a prompt string; the parser saw no substitution and allowed it (keel-gate red team, 2026-11-10)
+source: docs/red-team.md (own red team, proven in an offline Docker sandbox with bash 5.2)
+acs: [AC-232]
+steps:
+  - tool: shell
+    args: { command: "[[ 'a[$(rm -rf ~)]' -eq 0 ]]" }
+    expect: { verdict: ask, rule: shell_eval }
+  - tool: shell
+    args: { command: "x='a[$(rm -rf ~)]'; [[ $x -eq 0 ]]" }
+    expect: { verdict: ask, rule: shell_eval }
+  - tool: shell
+    args: { command: "printf -v 'a[$(rm -rf ~)]' %s x" }
+    expect: { verdict: ask, rule: shell_eval }
+  - tool: shell
+    args: { command: "x='$(rm -rf ~)'; echo \"${x@P}\"" }
+    expect: { verdict: ask, rule: shell_eval }
+  - tool: shell
+    args: { command: "echo $((P))" }
+    expect: { verdict: ask, rule: shell_eval }
+  - tool: shell
+    args: { command: "(( P ))" }
+    expect: { verdict: ask, rule: shell_eval }
+  - tool: shell
+    args: { command: "test -v \"$P\"" }
+    expect: { verdict: ask, rule: shell_eval }
+  - tool: shell
+    args: { command: "x=$P; echo ${!x}" }
+    expect: { verdict: ask, rule: shell_eval }
+  - tool: shell
+    args: { command: "declare -i z=\"$P\"" }
+    expect: { verdict: ask, rule: shell_eval }
+  - tool: shell
+    args: { command: "s=abc; echo ${s:P}" }
+    expect: { verdict: ask, rule: shell_eval }
+  - tool: shell
+    args: { command: "arr[$P]=1" }
+    expect: { verdict: ask, rule: shell_eval }
+  - tool: shell
+    args: { command: "rm -rf $'\\x2f'" }
+    expect: { verdict: deny, rule: rm_rf_dangerous }

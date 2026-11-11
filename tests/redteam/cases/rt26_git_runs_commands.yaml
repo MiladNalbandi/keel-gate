@@ -1,0 +1,32 @@
+id: RT-26
+incident: Git subcommands that run commands (bisect run, rebase -x), hooks and core.fsmonitor written into .git, and git options that write files were allowed as "local git" (keel-gate red team, 2026-11-10)
+source: docs/red-team.md (own red team, proven in a throwaway repo with git 2.54)
+acs: [AC-235, AC-030]
+steps:
+  - tool: shell
+    args: { command: "git bisect start HEAD HEAD~1 && git bisect run sh -c 'rm -rf ~'" }
+    expect: { verdict: ask, rule: argument_injection }
+  - tool: shell
+    args: { command: "git rebase -x 'rm -rf ~' HEAD~1" }
+    expect: { verdict: ask, rule: argument_injection }
+  - tool: shell
+    args: { command: "git rebase --exec='rm -rf ~' HEAD~1" }
+    expect: { verdict: ask, rule: argument_injection }
+  - tool: shell
+    args: { command: "git submodule foreach 'rm -rf ~'" }
+    expect: { verdict: ask, rule: argument_injection }
+  - tool: shell
+    args: { command: "printf '#!/bin/sh\\nrm -rf ~\\n' > .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit && git commit --allow-empty -m wip" }
+    expect: { verdict: deny, tier: T3, rule: protected_path }
+  - tool: shell
+    args: { command: "printf '[core]\\n\\tfsmonitor = rm -rf ~\\n' >> .git/config && git status" }
+    expect: { verdict: deny, tier: T3, rule: protected_path }
+  - tool: shell
+    args: { command: "git log -1 --format=%s --output=/home/dev/.bashrc" }
+    expect: { verdict: ask, rule: write_outside_workspace }
+  - tool: shell
+    args: { command: "git clone --template=./evil https://example.com/r.git" }
+    expect: { verdict: ask, rule: argument_injection }
+  - tool: shell
+    args: { command: "git archive --remote=x --exec='rm -rf ~' HEAD" }
+    expect: { verdict: ask, rule: argument_injection }

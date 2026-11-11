@@ -33,6 +33,7 @@ _NO_HASH = "0" * 64
 FLOOR_RULES = frozenset(
     {
         "rm_rf_dangerous",
+        "disk_wipe",
         "sql_drop",
         "git_force_protected",
         "remote_destructive",
@@ -53,6 +54,10 @@ class GateSettings:
     mode: Mode = "enforce"
     time_budget_s: float = 0.2
     protected_branches: tuple[str, ...] = field(default=DEFAULT_PROTECTED_BRANCHES)
+    protected_paths: tuple[str, ...] = ("policy", ".keel-gate", "keel-gate.yaml")
+    # Host-supplied symlink snapshot: (absolute link path, canonical target).
+    # Refresh it outside decide() when the workspace filesystem changes.
+    path_aliases: tuple[tuple[str, str], ...] = ()
     policy_changes: PolicyChanges = "ui"
     monitor: MonitorSettings = field(default_factory=MonitorSettings)
 
@@ -67,7 +72,9 @@ class GateSettings:
             raise ValueError("invalid gate config: monitor must be a monitor section")
 
 
-_SETTING_KEYS = frozenset({"mode", "time_budget_s", "protected_branches", "policy_changes", "monitor"})
+_SETTING_KEYS = frozenset(
+    {"mode", "time_budget_s", "protected_branches", "protected_paths", "path_aliases", "policy_changes", "monitor"}
+)
 
 
 def load_settings(config: Mapping[str, Any]) -> GateSettings:
@@ -80,6 +87,10 @@ def load_settings(config: Mapping[str, Any]) -> GateSettings:
     values = dict(config)
     if "protected_branches" in values:
         values["protected_branches"] = tuple(values["protected_branches"])
+    if "protected_paths" in values:
+        values["protected_paths"] = tuple(values["protected_paths"])
+    if "path_aliases" in values:
+        values["path_aliases"] = tuple(tuple(pair) for pair in values["path_aliases"])
     if "monitor" in values:
         values["monitor"] = MonitorSettings.from_mapping(values["monitor"])
     return GateSettings(**values)
@@ -174,7 +185,12 @@ class Gate:
                 f"arguments do not match the tool's schema ({errors[0]})",
                 call_hash,
             )
-        ctx = ShellContext(workspace=session.workspace, protected_branches=self.settings.protected_branches)
+        ctx = ShellContext(
+            workspace=session.workspace,
+            protected_branches=self.settings.protected_branches,
+            protected_paths=self.settings.protected_paths,
+            path_aliases=self.settings.path_aliases,
+        )
         classification = classify_tool_parts(spec, call.args, ctx)
         findings = apply_rules(state.rules, call, classification, self._clock)
         for check in self.extra_checks:

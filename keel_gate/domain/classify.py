@@ -11,7 +11,7 @@ from __future__ import annotations
 import posixpath
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fnmatch import fnmatchcase
 from typing import Any
 
@@ -26,7 +26,11 @@ DEFAULT_PROTECTED_BRANCHES = ("main", "master", "release/*", "production", "prod
 @dataclass(frozen=True)
 class ShellContext:
     workspace: str | None
+    cwd: str | None = ""
     protected_branches: tuple[str, ...] = DEFAULT_PROTECTED_BRANCHES
+    protected_paths: tuple[str, ...] = ("policy", ".keel-gate", "keel-gate.yaml")
+    # Trusted canonical symlink targets supplied by the host, never tool arguments.
+    path_aliases: tuple[tuple[str, str], ...] = ()
 
 
 def _allow(tier: Tier, rule: str, reason: str) -> Finding:
@@ -72,7 +76,16 @@ def classify_tool(spec: ToolSpec, args: Mapping[str, Any], ctx: ShellContext) ->
 def classify_tool_parts(spec: ToolSpec, args: Mapping[str, Any], ctx: ShellContext) -> Classification:
     if spec.kind == "shell":
         return classify_shell_parts(parse_shell(str(args.get("command", ""))), ctx)
-    return Classification((), (Unit(None, (_tool_finding(spec, args),)),))
+    findings = [_tool_finding(spec, args)]
+    if spec.state_changing and not spec.remote and spec.sql_arg is None:
+        paths = [
+            Word(str(value), str(value))
+            for key, value in args.items()
+            if key in {"path", "file_path", "filename", "destination", "target"} and isinstance(value, str)
+        ]
+        if paths:
+            findings.extend(_write_targets(paths, ctx))
+    return Classification((), (Unit(None, tuple(findings)),))
 
 
 def _tool_finding(spec: ToolSpec, args: Mapping[str, Any]) -> Finding:
@@ -114,6 +127,10 @@ def command_text(cmd: SimpleCommand) -> str:
 
 def classify_shell_parts(parsed: ShellParse, ctx: ShellContext) -> Classification:
     general: list[Finding] = []
+    if parsed.shell_eval:
+        general.append(_ask("shell_eval", "Bash evaluates arithmetic, variable names, or prompt text as code"))
+    if parsed.env_hijack:
+        general.append(_ask("env_hijack", "environment settings can select or inject executable code"))
     if parsed.parse_error:
         general.append(_ask("shell_unparseable", "the command could not be parsed safely"))
     if parsed.has_substitution:
@@ -255,9 +272,12 @@ HTTP_CLIENTS = frozenset({"curl", "wget", "http", "https", "xh", "httpie"})
 
 
 def _classify_command(cmd: SimpleCommand, ctx: ShellContext) -> list[Finding]:
+    ctx = replace(ctx, cwd=cmd.cwd)
     if cmd.dynamic_program:
         return [_ask("shell_dynamic_program", "the program name comes from a variable or substitution")]
     out: list[Finding] = []
+    if cmd.local_program:
+        out.append(_ask("local_program", "the executable is outside trusted system program directories"))
     if "sudo" in cmd.wrapped_by or "doas" in cmd.wrapped_by:
         out.append(_ask("privilege", "the command runs with elevated privileges"))
     if "xargs" in cmd.wrapped_by and any(w in SHELLS for w in cmd.wrapped_by):
@@ -285,8 +305,12 @@ def _classify_command(cmd: SimpleCommand, ctx: ShellContext) -> list[Finding]:
 # ---------------------------------------------------------------------- paths
 
 
-def _resolve(path: str, workspace: str | None) -> str | None:
+def _resolve(path: str, workspace: str | None, cwd: str | None = "") -> str | None:
     """Absolute, normalized path; None when it cannot be known (relative path and no workspace)."""
+    if not path.startswith("/"):
+        if cwd is None:
+            return None
+        path = posixpath.join(cwd, path)
     if path.startswith("/"):
         resolved = posixpath.normpath(path)
     elif workspace:
@@ -301,14 +325,70 @@ def _inside(path: str, workspace: str) -> bool:
     return path == root or path.startswith(root.rstrip("/") + "/")
 
 
-def _outside_reason(word: Word, workspace: str | None) -> str | None:
+def _canonical_path(word: Word, ctx: ShellContext) -> str | None:
+    if word.value is None:
+        return None
+    resolved = _resolve(word.value.replace("\\", "/"), ctx.workspace, ctx.cwd)
+    if resolved is None:
+        return None
+    # Expand a host-provided snapshot rather than reading symlinks during decide().
+    for _ in range(8):
+        expanded = resolved
+        for link, target in ctx.path_aliases:
+            if _inside(resolved, link):
+                expanded = posixpath.normpath(target + resolved[len(link) :])
+                break
+        if expanded == resolved:
+            return resolved
+        resolved = expanded
+    return None  # Cyclic or excessively deep aliases require review.
+
+
+def _path_reason(word: Word, ctx: ShellContext) -> str | None:
+    if ctx.path_aliases:
+        resolved = _canonical_path(word, ctx)
+        if resolved is None:
+            return "a path whose canonical target is unknown"
+        word = Word(word.raw, resolved)
+    return _outside_reason(word, ctx.workspace, ctx.cwd)
+
+
+def _protected_path(word: Word, ctx: ShellContext) -> bool:
+    if word.value is None:
+        return False
+    resolved = _canonical_path(word, ctx) or posixpath.normpath(word.value)
+    parts = resolved.casefold().split("/")
+    if any(p in {".claude", ".codex", ".cursor", ".vscode", ".mcp.json"} for p in parts):
+        return True
+    if parts[-1] == ".git":
+        return True
+    if any(parts[i] == ".git" and parts[i + 1] in {"hooks", "config"} for i in range(len(parts) - 1)):
+        return True
+    for path in ctx.protected_paths:
+        protected = _resolve(path, ctx.workspace) or posixpath.normpath(path)
+        if _inside(resolved.casefold(), protected.casefold()):
+            return True
+    return False
+
+
+def _protected_findings(targets: list[Word], ctx: ShellContext) -> list[Finding]:
+    if any(_protected_path(word, ctx) for word in targets):
+        return [_deny("protected_path", "the path controls agent execution or gate policy")]
+    return []
+
+
+def _outside_reason(word: Word, workspace: str | None, cwd: str | None = "") -> str | None:
     """Why a written or deleted path is outside the safe area, or None when it is inside the workspace."""
     value = word.value
     if value is None:
         return "a path built at run time"
     if value.startswith("~"):
         return "the home folder"
-    resolved = _resolve(value, workspace)
+    if cwd is None and not value.startswith("/"):
+        return "a path built at run time"
+    if (cwd or "").startswith("~") and not value.startswith("/"):
+        return "the home folder"
+    resolved = _resolve(value, workspace, cwd)
     if resolved is None:
         return "a path outside the workspace" if ".." in value.split("/") else None
     if workspace is None:
@@ -319,12 +399,15 @@ def _outside_reason(word: Word, workspace: str | None) -> str | None:
 def _redirect_findings(cmd: SimpleCommand, ctx: ShellContext) -> list[Finding]:
     out: list[Finding] = []
     for redirect in cmd.redirects:
-        if redirect.op not in (">", ">>", "&>", "&>>", ">|"):
+        if redirect.op not in (">", ">>", "&>", "&>>", ">&", ">|"):
             continue
         target = redirect.target
+        if redirect.op == ">&" and target.value is not None and target.value.isdigit():
+            continue
         if target.value in ("/dev/null", "/dev/stdout", "/dev/stderr"):
             continue
-        reason = _outside_reason(target, ctx.workspace)
+        out.extend(_protected_findings([target], ctx))
+        reason = _path_reason(target, ctx)
         if reason is None:
             out.append(_allow(Tier.T1, "file_write", "writes a file inside the workspace"))
         else:
@@ -349,8 +432,11 @@ def _split_options(args: tuple[Word, ...]) -> tuple[list[str], list[Word]]:
 
 def _local_change(cmd: SimpleCommand, ctx: ShellContext) -> list[Finding]:
     _, targets = _split_options(cmd.args)
+    protected = _protected_findings(targets, ctx)
+    if protected:
+        return protected
     for word in targets:
-        reason = _outside_reason(word, ctx.workspace)
+        reason = _path_reason(word, ctx)
         if reason is not None:
             return [_ask("write_outside_workspace", f"'{cmd.program}' touches {reason}")]
     return [_allow(Tier.T1, "file_change", f"'{cmd.program}' changes files inside the workspace")]
@@ -361,7 +447,7 @@ def _local_change(cmd: SimpleCommand, ctx: ShellContext) -> list[Finding]:
 _DRIVE_ROOT = re.compile(r"^[A-Za-z]:[\\/]?$")
 
 
-def _delete_danger(word: Word, workspace: str | None) -> str | None:
+def _delete_danger(word: Word, workspace: str | None, cwd: str | None = "") -> str | None:
     """Why deleting this target recursively is catastrophic, or None."""
     value = word.value
     if value is None:
@@ -375,7 +461,11 @@ def _delete_danger(word: Word, workspace: str | None) -> str | None:
         return f"the drive {value}"
     if value.startswith("~"):
         return f"'{value}' in the home folder"
-    resolved = _resolve(value, workspace)
+    if cwd is None and not value.startswith("/"):
+        return None
+    if (cwd or "").startswith("~") and not value.startswith("/"):
+        return "the home folder"
+    resolved = _resolve(value, workspace, cwd)
     if resolved is None:
         return f"'{value}', outside the workspace" if ".." in value.split("/") else None
     if resolved == "/":
@@ -389,9 +479,15 @@ def _delete_danger(word: Word, workspace: str | None) -> str | None:
     return None
 
 
+def _long_option(value: str, *names: str) -> bool:
+    """Conservatively recognize long-option abbreviations, including attached values."""
+    option = value.split("=", 1)[0]
+    return option.startswith("--") and len(option) > 2 and any(name.startswith(option) for name in names)
+
+
 def _is_recursive(options: list[str]) -> bool:
     for option in options:
-        if option in ("-r", "-R", "--recursive"):
+        if option in ("-r", "-R") or _long_option(option, "--recursive"):
             return True
         if not option.startswith("--") and ("r" in option[1:] or "R" in option[1:]):
             return True
@@ -400,15 +496,18 @@ def _is_recursive(options: list[str]) -> bool:
 
 def _rm(cmd: SimpleCommand, ctx: ShellContext) -> list[Finding]:
     options, targets = _split_options(cmd.args)
+    protected = _protected_findings(targets, ctx)
+    if protected:
+        return protected
     recursive = cmd.program == "rimraf" or _is_recursive(options)
     if not recursive:
         for word in targets:
-            reason = _outside_reason(word, ctx.workspace)
+            reason = _path_reason(word, ctx)
             if reason is not None:
                 return [_ask("rm_outside", f"deletes {reason}")]
         return [_ask("rm_file", "deletes files for good")]
     for word in targets:
-        danger = _delete_danger(word, ctx.workspace)
+        danger = _delete_danger(word, ctx.workspace, ctx.cwd)
         if danger is not None:
             return [_deny("rm_rf_dangerous", f"recursive delete of {danger}")]
     if not targets:
@@ -524,16 +623,31 @@ def _git(cmd: SimpleCommand, ctx: ShellContext) -> list[Finding]:
         sub in ("clone", "fetch", "pull") and ("-u" in values or "-c" in values)
     ):
         out.append(_ask("argument_injection", f"git {sub} options can run a program"))
+    if (
+        (sub == "bisect" and "run" in values)
+        or (sub == "submodule" and "foreach" in values)
+        or (sub == "rebase" and any(v == "-x" or v.startswith(("--exec", "-x")) for v in values))
+        or (sub == "clone" and any(v.startswith("--template") for v in values))
+        or (sub == "archive" and any(v.startswith("--exec") for v in values))
+    ):
+        out.append(_ask("argument_injection", f"git {sub} can execute commands"))
+    outputs = _option_values(rest, "", "--output")
+    if outputs:
+        out.extend(_write_targets(outputs, ctx))
     out.extend(_git_sub(sub, values, rest, ctx))
     return out
 
 
 def _git_sub(sub: str, values: list[str], rest: tuple[Word, ...], ctx: ShellContext) -> list[Finding]:
     def has(*flags: str) -> bool:
-        return any(v in flags for v in values)
+        return any(v in flags or _long_option(v, *(f for f in flags if f.startswith("--"))) for v in values)
 
     if sub == "push":
         return _git_push(rest, ctx)
+    if sub == "grep" and any(
+        v == "--open-files-in-pager" or v.startswith(("-O", "--open-files-in-pager=")) for v in values
+    ):
+        return [_ask("argument_injection", "git grep launches a pager")]
     if sub in _GIT_READ:
         return [_allow(Tier.T0, "read_only_command", f"git {sub} only reads")]
     if sub == "branch":
@@ -622,11 +736,11 @@ def _git_push(rest: tuple[Word, ...], ctx: ShellContext) -> list[Finding]:
         value = word.value
         if value is None:
             positional.append(None)
-        elif value in ("-f", "--force") or value.startswith("--force-with-lease"):
+        elif value == "-f" or _long_option(value, "--force", "--force-with-lease", "--force-if-includes"):
             force = True
-        elif value == "--mirror":
+        elif _long_option(value, "--mirror"):
             mirror = True
-        elif value in ("-d", "--delete"):
+        elif value == "-d" or _long_option(value, "--delete"):
             delete = True
         elif value.startswith("-") and not value.startswith("--") and len(value) > 1:
             force |= "f" in value[1:]
@@ -661,6 +775,19 @@ _FIND_EXEC = frozenset({"-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprin
 
 
 def _find(cmd: SimpleCommand, ctx: ShellContext) -> list[Finding]:
+    values = [w.value or "" for w in cmd.args]
+    deletes = "-delete" in values or (
+        any(v in values for v in ("-exec", "-execdir", "-ok", "-okdir")) and "rm" in values and _is_recursive(values)
+    )
+    roots = list(cmd.args[: next((i for i, v in enumerate(values) if v.startswith("-")), len(values))])
+    if deletes and any(
+        _delete_danger(w, ctx.workspace, ctx.cwd) and _resolve(w.value or "", ctx.workspace, ctx.cwd) != ctx.workspace
+        for w in roots
+    ):
+        return [
+            _deny("rm_rf_dangerous", "find recursively deletes a dangerous root"),
+            _ask("argument_injection", "find can run commands or delete files"),
+        ]
     if any(w.value in _FIND_EXEC for w in cmd.args):
         return [_ask("argument_injection", "find can run commands or delete files (-exec, -delete)")]
     return [_allow(Tier.T0, "read_only_command", "find only lists files")]
@@ -685,7 +812,10 @@ def _go(cmd: SimpleCommand, ctx: ShellContext) -> list[Finding]:
 def _tar(cmd: SimpleCommand, ctx: ShellContext) -> list[Finding]:
     values = [w.value or "" for w in cmd.args]
     if any(
-        v in ("-I", "--to-command", "--use-compress-program")
+        v == "-I"
+        or _long_option(
+            v, "--to-command", "--checkpoint-action", "--use-compress-program", "--info-script", "--new-volume-script"
+        )
         or v.startswith(
             (
                 "--to-command=",
@@ -701,18 +831,141 @@ def _tar(cmd: SimpleCommand, ctx: ShellContext) -> list[Finding]:
     return _local_change(cmd, ctx)
 
 
+def _write_targets(targets: list[Word], ctx: ShellContext) -> list[Finding]:
+    protected = _protected_findings(targets, ctx)
+    if protected:
+        return protected
+    for word in targets:
+        reason = _path_reason(word, ctx)
+        if reason is not None:
+            return [_ask("write_outside_workspace", f"writes to {reason}")]
+    return [_allow(Tier.T1, "file_write", "writes files inside the workspace")]
+
+
+def _option_values(args: tuple[Word, ...], short: str, long: str) -> list[Word]:
+    result: list[Word] = []
+    for i, word in enumerate(args):
+        value = word.value or ""
+        if value == "--":
+            break
+        if value in (short, long):
+            result.append(args[i + 1] if i + 1 < len(args) else Word("", None))
+        elif value.startswith(long + "=") or (short and value.startswith(short) and len(value) > len(short)):
+            text = value.split("=", 1)[1] if value.startswith(long + "=") else value[len(short) :]
+            result.append(Word(word.raw, text))
+    return result
+
+
+def _sed_script_safe(script: str) -> bool:
+    """Recognize a bounded, print-only sed subset; unknown syntax needs approval."""
+    remaining = script.strip()
+    while remaining:
+        # Numeric and regexp addresses precede a command.
+        address = re.match(r"^(?:(?:[0-9]+|\$)(?:,(?:[0-9]+|\$))?|/(?:\\.|[^/])*/)?\s*!?\s*", remaining)
+        remaining = remaining[address.end() :] if address else remaining
+        if not remaining:
+            return False
+        command, remaining = remaining[0], remaining[1:]
+        if command == "s":
+            if not remaining or remaining[0].isalnum() or remaining[0].isspace():
+                return False
+            delimiter, remaining = remaining[0], remaining[1:]
+            for _ in range(2):
+                match = re.match(r"(?:\\.|[^" + re.escape(delimiter) + r"])*" + re.escape(delimiter), remaining)
+                if not match:
+                    return False
+                remaining = remaining[match.end() :]
+            flags = re.match(r"[0-9gpIiMm]*", remaining)
+            remaining = remaining[flags.end() :] if flags else remaining
+        elif command not in "pdDqQnNgGhHx=":
+            return False
+        remaining = remaining.lstrip()
+        if remaining and remaining[0] not in ";\n":
+            return False
+        remaining = remaining.lstrip(";\n \t")
+    return True
+
+
 def _sed(cmd: SimpleCommand, ctx: ShellContext) -> list[Finding]:
-    values = [w.value or "" for w in cmd.args]
-    if any(v.startswith(("-i", "--in-place")) for v in values):
-        return _local_change(cmd, ctx)
-    return [_allow(Tier.T0, "read_only_command", "sed without -i only prints")]
+    scripts: list[Word] = []
+    targets: list[Word] = []
+    inplace = False
+    i = 0
+    while i < len(cmd.args):
+        word = cmd.args[i]
+        value = word.value or ""
+        if value in ("-f", "--file") or value.startswith(("--file=", "-f")):
+            return [_ask("argument_injection", "sed runs a script from a file")]
+        if value in ("-e", "--expression"):
+            i += 1
+            scripts.append(cmd.args[i] if i < len(cmd.args) else Word("", None))
+        elif value.startswith("--expression=") or value.startswith("-e"):
+            scripts.append(Word(word.raw, value.split("=", 1)[1] if "=" in value else value[2:]))
+        elif value.startswith("--in-place") or (
+            value.startswith("-") and not value.startswith("--") and "i" in value[1:]
+        ):
+            inplace = True
+        elif value.startswith("-"):
+            if value not in ("-n", "-E", "-r", "--quiet", "--silent", "--regexp-extended", "--"):
+                return [_ask("argument_injection", "unknown sed option")]
+        elif not scripts:
+            scripts.append(word)
+        else:
+            targets.append(word)
+        i += 1
+    if not scripts or any(w.value is None or not _sed_script_safe(w.value) for w in scripts):
+        return [_ask("argument_injection", "the sed script may execute commands or write files")]
+    if inplace:
+        return _write_targets(targets, ctx)
+    return [_allow(Tier.T0, "read_only_command", "sed only prints")]
 
 
 def _awk(cmd: SimpleCommand, ctx: ShellContext) -> list[Finding]:
-    script = " ".join(w.value or w.raw for w in cmd.args)
-    if re.search(r"\bsystem\s*\(|\|\s*getline|print[^;]*>\s*\"", script):
+    values = [w.value or w.raw for w in cmd.args]
+    script = " ".join(values)
+    if any(v in ("-f", "--file") or v.startswith(("-f", "--file=")) for v in values):
+        return [_ask("argument_injection", "awk runs a script from a file")]
+    # Mask strings so operators inside data do not become syntax. A single pipe is
+    # executable I/O in awk; boolean || remains a normal read-only predicate.
+    syntax = re.sub(r'"(?:\\.|[^"\\])*"', '""', script)
+    if re.search(r"\bsystem\s*\(|(?<!\|)\|(?!\|)|\b(?:print|printf)\b[^;{}]*(?:>|>>)", syntax):
         return [_ask("argument_injection", "the awk script runs commands or writes files")]
     return [_allow(Tier.T0, "read_only_command", "awk only reads")]
+
+
+def _output_tool(cmd: SimpleCommand, ctx: ShellContext) -> list[Finding]:
+    if cmd.program == "rg" and any((w.value or "").startswith("--pre") for w in cmd.args):
+        return [_ask("argument_injection", "rg preprocessing executes a program")]
+    if cmd.program == "sort" and any((w.value or "").startswith("--compress-program") for w in cmd.args):
+        return [_ask("argument_injection", "sort compression executes a program")]
+    outputs = _option_values(cmd.args, "-o", "--output") if cmd.program in ("sort", "tree") else []
+    if cmd.program in ("uniq", "xxd"):
+        # These options consume an argument rather than naming an input/output.
+        with_value = {"uniq": {"-f", "-s", "-w"}, "xxd": {"-c", "-g", "-l", "-s", "-o"}}[cmd.program]
+        positional: list[Word] = []
+        skip = False
+        for word in cmd.args:
+            if skip:
+                skip = False
+            elif word.value in with_value:
+                skip = True
+            elif not (word.value or "").startswith("-"):
+                positional.append(word)
+        outputs = positional[1:]
+    if outputs:
+        return _write_targets(outputs, ctx)
+    return [_allow(Tier.T0, "read_only_command", f"'{cmd.program}' only reads")]
+
+
+def _gzip(cmd: SimpleCommand, ctx: ShellContext) -> list[Finding]:
+    options, targets = _split_options(cmd.args)
+    if cmd.program == "zcat" or any(
+        v in ("--stdout", "--to-stdout", "--list", "--test")
+        or (v.startswith("-") and not v.startswith("--") and any(c in v[1:] for c in "clt"))
+        for v in options
+    ):
+        return [_allow(Tier.T0, "read_only_command", "compression output goes to stdout")]
+    return _write_targets(targets, ctx)
 
 
 def _rsync_ssh(cmd: SimpleCommand, ctx: ShellContext) -> list[Finding]:
@@ -726,11 +979,26 @@ def _rsync_ssh(cmd: SimpleCommand, ctx: ShellContext) -> list[Finding]:
 
 
 def _sql_client(cmd: SimpleCommand, ctx: ShellContext) -> list[Finding]:
-    statements = [w.value for w in cmd.args if w.value is not None and looks_like_sql(w.value)]
-    if not statements:
+    statements: list[str] = []
+    out: list[Finding] = []
+    inputs = [*cmd.args, *cmd.stdin, *(r.target for r in cmd.redirects if r.op == "<<<")]
+    inputs.extend(_option_values(cmd.args, "-c", "--command"))
+    for word in inputs:
+        if word.value is None:
+            out.append(_ask("db_client", "database input is not known before execution"))
+            continue
+        text = word.value
+        if looks_like_sql(text):
+            statements.append(text)
+        if cmd.program in ("sqlite3", "duckdb") and text.lstrip().startswith((".shell ", ".system ")):
+            script = text.lstrip().split(None, 1)[1]
+            out.extend(classify_shell(parse_shell(script), ctx))
+        elif text.lstrip().startswith(("\\!", "\\i", ".read", ".load")):
+            out.append(_ask("argument_injection", "database client input can run code"))
+    if not statements and not out:
         return [_ask("db_client", f"'{cmd.program}' opens a database client")]
-    worst = max((_sql_finding(s) for s in statements), key=lambda f: (f.verdict.rank, f.tier.rank))
-    return [worst]
+    out.extend(_sql_finding(s) for s in statements)
+    return out
 
 
 _DESTRUCTIVE_WORD = re.compile(r"(?i)(delete|destroy|drop|purge|wipe|terminate|remove)")
@@ -749,8 +1017,9 @@ def _http(cmd: SimpleCommand, ctx: ShellContext) -> list[Finding]:
             method = following
         elif value.startswith(("--request=", "--method=")):
             method = value.split("=", 1)[1]
-        elif value.startswith("-X") and len(value) > 2:
-            method = value[2:]
+        elif value.startswith("-") and not value.startswith("--") and "X" in value[1:]:
+            suffix = value.split("X", 1)[1]
+            method = suffix or following or ""
         elif (
             value
             in (
@@ -783,7 +1052,43 @@ def _http(cmd: SimpleCommand, ctx: ShellContext) -> list[Finding]:
     return [_ask("network", f"'{cmd.program}' sends a network request")]
 
 
+def _disk(cmd: SimpleCommand, ctx: ShellContext) -> list[Finding]:
+    values = [w.value or "" for w in cmd.args]
+    if cmd.program == "dd":
+        targets = [Word(w.raw, w.value[3:]) for w in cmd.args if w.value and w.value.startswith("of=")]
+        if not targets:
+            return [_ask("disk_write", "dd output cannot be determined")]
+    else:
+        _, targets = _split_options(cmd.args)
+    if any((w.value or "").startswith("/dev/") for w in targets) or (
+        cmd.program == "diskutil"
+        and any(v.casefold().startswith(("erase", "partition", "zero", "secureerase")) for v in values)
+    ):
+        return [_deny("disk_wipe", "the command overwrites or formats a disk device")]
+    if cmd.program == "dd":
+        return _write_targets(targets, ctx)
+    return [_ask("disk_write", "the command can destroy stored data")]
+
+
 _HANDLERS: dict[str, Callable[[SimpleCommand, ShellContext], list[Finding]]] = {
+    **dict.fromkeys(
+        {
+            "dd",
+            "mkfs",
+            "mkfs.ext2",
+            "mkfs.ext3",
+            "mkfs.ext4",
+            "mkfs.xfs",
+            "mkfs.btrfs",
+            "mkfs.vfat",
+            "shred",
+            "wipefs",
+            "diskutil",
+            "fdisk",
+            "parted",
+        },
+        _disk,
+    ),
     "rm": _rm,
     "rimraf": _rm,
     "rd": _windows_delete,
@@ -799,6 +1104,8 @@ _HANDLERS: dict[str, Callable[[SimpleCommand, ShellContext], list[Finding]]] = {
     "gsed": _sed,
     "awk": _awk,
     "gawk": _awk,
+    **dict.fromkeys({"sort", "uniq", "xxd", "tree", "rg"}, _output_tool),
+    **dict.fromkeys({"gzip", "gunzip", "zcat"}, _gzip),
     "rsync": _rsync_ssh,
     "ssh": _rsync_ssh,
     "scp": _rsync_ssh,

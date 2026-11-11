@@ -1,8 +1,4 @@
-"""Classify SQL text as read, write, or destructive (AC-023).
-
-Destructive means it cannot be undone and hits everything: DROP, TRUNCATE, ALTER … DROP, and DELETE or UPDATE without
-a WHERE clause. Unknown statements count as writes, never as reads (fail closed).
-"""
+"""Conservative SQL classification using lexical tokens, never executing SQL."""
 
 from __future__ import annotations
 
@@ -10,48 +6,111 @@ import re
 from typing import Literal
 
 SqlKind = Literal["read", "write", "destructive"]
-
 _RANK: dict[SqlKind, int] = {"read": 0, "write": 1, "destructive": 2}
-_KEYWORDS = (
-    "select|with|insert|update|delete|drop|truncate|alter|create|replace|merge|grant|revoke|show|explain|describe|"
-    "desc|pragma|vacuum|copy|begin|commit|rollback|upsert|values|analyze|reindex|cluster|comment|lock|call|exec|"
-    "execute|load|rename|flush"
+_KEYWORDS = frozenset(
+    [
+        "SELECT",
+        "WITH",
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "TRUNCATE",
+        "ALTER",
+        "CREATE",
+        "REPLACE",
+        "MERGE",
+        "GRANT",
+        "REVOKE",
+        "SHOW",
+        "EXPLAIN",
+        "DESCRIBE",
+        "DESC",
+        "PRAGMA",
+        "VACUUM",
+        "COPY",
+        "BEGIN",
+        "COMMIT",
+        "ROLLBACK",
+        "UPSERT",
+        "VALUES",
+        "ANALYZE",
+        "REINDEX",
+        "CLUSTER",
+        "COMMENT",
+        "LOCK",
+        "CALL",
+        "EXEC",
+        "EXECUTE",
+        "LOAD",
+        "RENAME",
+        "FLUSH",
+    ]
 )
-_LOOKS_LIKE_SQL = re.compile(rf"^\s*\(?\s*(?:{_KEYWORDS})\b", re.IGNORECASE)
-_LINE_COMMENT = re.compile(r"--[^\n]*")
-_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
-_WHERE = re.compile(r"\bwhere\b", re.IGNORECASE)
-_WRITE_IN_CTE = re.compile(r"\b(delete|update|insert|drop|truncate|merge)\b", re.IGNORECASE)
-_READ = frozenset({"SELECT", "SHOW", "EXPLAIN", "DESCRIBE", "DESC", "VALUES"})
+_TOKEN = re.compile(
+    r"--[^\n]*|/\*.*?\*/|'(?:''|\\.|[^'\\])*'|\"(?:\"\"|[^\"])*\"|"
+    r"\$[A-Za-z_0-9]*\$.*?\$[A-Za-z_0-9]*\$|[A-Za-z_][A-Za-z_0-9]*|[0-9]+|[^\s]",
+    re.DOTALL,
+)
+
+
+def _lexemes(text: str) -> list[str]:
+    result = []
+    for match in _TOKEN.finditer(text):
+        lexeme = match.group()
+        if lexeme.startswith(("--", "/*")):
+            continue
+        # Quoted contents cannot supply SQL keywords or statement separators.
+        result.append("LITERAL" if lexeme.startswith(("'", '"', "$")) else lexeme.upper())
+    return result
 
 
 def looks_like_sql(text: str) -> bool:
-    return bool(_LOOKS_LIKE_SQL.match(text))
+    lexemes = _lexemes(text)
+    lexemes = [part for part in lexemes if part != "("]
+    return bool(lexemes) and lexemes[0] in _KEYWORDS
 
 
-def _statement(stmt: str) -> SqlKind:
-    words = stmt.lstrip("( \t\n").split(None, 1)
-    if not words:
+def _statement(lexemes: list[str]) -> SqlKind:
+    if not lexemes:
         return "read"
-    verb = words[0].upper()
-    if verb in ("DROP", "TRUNCATE"):
+    verb = lexemes[0]
+    if verb in ("DROP", "TRUNCATE") or (verb == "ALTER" and "DROP" in lexemes):
         return "destructive"
     if verb in ("DELETE", "UPDATE"):
-        return "write" if _WHERE.search(stmt) else "destructive"
-    if verb == "ALTER":
-        return "destructive" if re.search(r"\bdrop\b", stmt, re.IGNORECASE) else "write"
+        # Only a WHERE in the outer statement constrains the affected rows.
+        depth = 0
+        for i, lexeme in enumerate(lexemes):
+            if lexeme == "(":
+                depth += 1
+            elif lexeme == ")":
+                depth -= 1
+            elif lexeme == "WHERE" and depth == 0:
+                condition = lexemes[i + 1 :]
+                while condition[:1] == ["("] and condition[-1:] == [")"]:
+                    condition = condition[1:-1]
+                if condition[:1] == ["TRUE"] or condition in (["1"], ["1", "=", "1"]):
+                    return "destructive"
+                return "write"
+        return "destructive"
     if verb == "WITH":
-        match = _WRITE_IN_CTE.search(stmt)
-        return _statement(stmt[match.start() :]) if match else "read"
-    if verb in _READ:
-        return "write" if verb == "SELECT" and re.search(r"\binto\b", stmt, re.IGNORECASE) else "read"
+        kinds = [
+            _statement(lexemes[i:])
+            for i, lexeme in enumerate(lexemes)
+            if lexeme in {"DELETE", "UPDATE", "INSERT", "DROP", "TRUNCATE", "MERGE"}
+        ]
+        return max(kinds, key=lambda k: _RANK[k]) if kinds else "read"
+    if verb in {"SELECT", "SHOW", "EXPLAIN", "DESCRIBE", "DESC", "VALUES"}:
+        return "write" if "INTO" in lexemes or (verb == "EXPLAIN" and "ANALYZE" in lexemes) else "read"
     return "write"
 
 
 def classify_sql(text: str) -> SqlKind:
-    """The most dangerous kind among all statements in `text`."""
-    clean = _BLOCK_COMMENT.sub(" ", _LINE_COMMENT.sub(" ", text))
-    kinds = [_statement(s) for s in clean.split(";") if s.strip()]
-    if not kinds:
-        return "read"
-    return max(kinds, key=lambda k: _RANK[k])
+    """Return the most dangerous statement, ignoring keywords inside quoted data."""
+    statements: list[list[str]] = [[]]
+    for lexeme in _lexemes(text):
+        if lexeme == ";":
+            statements.append([])
+        else:
+            statements[-1].append(lexeme)
+    return max((_statement(s) for s in statements), key=lambda k: _RANK[k])

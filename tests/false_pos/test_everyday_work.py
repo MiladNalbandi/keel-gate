@@ -32,6 +32,33 @@ ALLOWED_T0 = [
     "jq .name package.json",
     "psql -c 'select 1'",
     "ls | xargs -n1 echo",
+    # Amendment A4: the hardened rules keep these everyday reads allowed
+    "sed 's/foo/bar/g' src/cart.py",
+    "sed -n '/def /p' src/cart.py",
+    "sed -e 's/a/b/' -e 's/c/d/' data.txt",
+    "sed -E 's/[0-9]+/N/;s/x/y/' data.txt",
+    "awk -F, '$3 > 10 {print $1}' data.csv",
+    "awk 'NR==2' data.txt",
+    "awk '{sum += $1} END {print sum}' data.txt",
+    'awk \'$1 == "a" || $2 == "b"\' data.txt',
+    "sort -u names.txt",
+    "uniq -c names.txt",
+    "gzip -dc logs.gz",
+    "zcat logs.gz | head",
+    "[[ -f setup.py ]] && cat setup.py",
+    "[ -d build ] || echo missing",
+    "for f in *.py; do echo $f; done",
+    "export FOO=bar",
+    "echo ${HOME:-/tmp} ${#HOME}",
+    "/usr/bin/git status",
+    "rg TODO src",
+    "date +%Y-%m-%d",
+    "echo '{\"a\": 1}' | jq .a",
+    "git log --oneline -5",
+    "git grep -n TODO",
+    "printf '%s\\n' a b",
+    "test -f setup.py",
+    "echo hi >&2",
 ]
 
 ALLOWED_T1 = [
@@ -55,6 +82,16 @@ ALLOWED_T1 = [
     "sed -i 's/a/b/' src/x.py",
     "tar -czf out.tgz src",
     "rmdir emptydir",
+    # Amendment A4
+    "sort data.txt -o sorted.txt",
+    "git rebase main",
+    "git bisect start HEAD HEAD~3",
+    "gzip build/out.log",
+    "cd build && touch out.txt",
+    "sed -i.bak 's/a/b/' src/x.py",
+    "git log -1 --format=%s --output=notes.txt",
+    "dd if=/dev/urandom of=test.bin bs=1k count=1",
+    "echo hi > .github/notes.txt",
 ]
 
 ASKED = [
@@ -99,6 +136,17 @@ ASKED = [
     ("psql -c 'insert into t values (1)'", "sql_write"),
     ("sudo ls", "privilege"),
     ("cat x | sh", "pipe_to_shell"),
+    # Amendment A4: risky, but not catastrophic, so a human decides
+    ("./node_modules/.bin/cat file", "local_program"),
+    ("find . -name '*.pyc' -delete", "argument_injection"),
+    ("cd build && rm -rf dist", "rm_recursive"),
+    ("find . -name node_modules | xargs rm -rf", "rm_recursive"),
+    ("psql -f migrate.sql", "db_client"),
+    ("[[ $count -gt 5 ]]", "shell_eval"),
+    ("echo $((count + 1))", "shell_eval"),
+    ("git reset --merge", "git_destructive"),
+    ("PAGER=cat git log", "env_hijack"),
+    ("dd if=a.img of=/home/dev/b.img", "write_outside_workspace"),
 ]
 
 DENIED = [
@@ -112,6 +160,12 @@ DENIED = [
     ("curl -XDELETE https://api.example.com/v1/items/1", "remote_destructive"),
     ("wget --method=DELETE https://api.example.com/v1/items/1", "remote_destructive"),
     ("curl --data='mutation { dropDatabase }' https://api.example.com/graphql", "remote_destructive"),
+    # Amendment A4
+    ("rm --recursive --force /", "rm_rf_dangerous"),
+    ("cd / && rm -rf usr", "rm_rf_dangerous"),
+    ("shred /dev/sda", "disk_wipe"),
+    ("wipefs -a /dev/sdb", "disk_wipe"),
+    ("sudo dd if=/dev/zero of=/dev/nvme0n1", "disk_wipe"),
 ]
 
 
