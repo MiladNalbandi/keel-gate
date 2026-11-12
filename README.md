@@ -8,6 +8,8 @@
               "rm -rf ~"                          ──►  ⛔ block        (catastrophic)
 ```
 
+▶ **[Watch the 2-minute demo](docs/demo/keel-gate-demo.mp4)**: every decision in it is live keel-gate output.
+
 > **Part of [Keel](https://github.com/MiladNalbandi/keel-v2).** keel-gate is Keel's action gate, moved into its own
 > repo for the Drawerrr AI Safety Challenge *Prevent irreversible autonomous actions*.
 >
